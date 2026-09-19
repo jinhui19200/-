@@ -15,7 +15,7 @@ const TABS: { key: TabKey; label: string }[] = [
 export default function App() {
   const [tab, setTab] = useState<TabKey>('warehouse')
   const [bridge, setBridge] = useState('通道检测中…')
-  const { db, ready, error, applyTransaction } = useAppData()
+  const { db, ready, error, applyTransaction, deleteRecord, exportXlsx } = useAppData()
 
   useEffect(() => {
     Promise.resolve()
@@ -55,7 +55,13 @@ export default function App() {
             applyTransaction={applyTransaction}
           />
         )}
-        {ready && tab === 'records' && <RecordsPage records={db.records} />}
+        {ready && tab === 'records' && (
+          <RecordsPage
+            records={db.records}
+            deleteRecord={deleteRecord}
+            exportXlsx={exportXlsx}
+          />
+        )}
         {ready && tab === 'operation' && (
           <OperationPage
             items={db.items}

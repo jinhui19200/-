@@ -1,4 +1,5 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { writeFile } from 'node:fs/promises'
 import type { TransactionInput } from '@shared/types'
 import { getSnapshot } from './store/db'
 import { applyTransaction, deleteRecord } from './store/transactions'
@@ -32,5 +33,20 @@ export function registerIpcHandlers(): void {
     const result = await deleteRecord(id)
     if (result.ok) broadcastChanged()
     return result
+  })
+
+  /** 导出 Excel：渲染进程生成 buffer，主进程弹 dialog 保存 */
+  ipcMain.handle('export:xlsx', async (_event, data: number[], defaultName: string) => {
+    const { filePath } = await dialog.showSaveDialog({
+      defaultPath: defaultName,
+      filters: [{ name: 'Excel 工作簿', extensions: ['xlsx'] }]
+    })
+    if (!filePath) return { ok: false, cancelled: true }
+    try {
+      await writeFile(filePath, Buffer.from(data))
+      return { ok: true, path: filePath }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
   })
 }

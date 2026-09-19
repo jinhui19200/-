@@ -32,6 +32,14 @@ const api = {
   deleteRecord: (id: string): Promise<DeleteRecordResult> =>
     ipcRenderer.invoke('db:deleteRecord', id),
 
+  /** 导出 Excel */
+  exportXlsx: (data: number[], defaultName: string): Promise<{
+    ok: boolean
+    path?: string
+    cancelled?: boolean
+    error?: string
+  }> => ipcRenderer.invoke('export:xlsx', data, defaultName),
+
   /** 订阅数据变更，返回订阅号 */
   onChanged: (callback: () => void): number => {
     const id = ++nextSubscriberId

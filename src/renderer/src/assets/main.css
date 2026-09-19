@@ -382,6 +382,84 @@ body {
   margin-top: 4px;
 }
 
+/* ===== 记录页工具栏 ===== */
+.records-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.records-header h2 {
+  margin: 0;
+}
+
+.records-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.search-input {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  outline: none;
+  width: 160px;
+  transition: border-color 0.15s;
+}
+
+.search-input:focus {
+  border-color: var(--accent);
+}
+
+.search-input::placeholder {
+  color: var(--text-faint);
+}
+
+.filter-group {
+  display: flex;
+  gap: 2px;
+}
+
+.filter-group .btn-sm {
+  border-radius: 0;
+}
+
+.filter-group .btn-sm:first-child {
+  border-radius: 5px 0 0 5px;
+}
+
+.filter-group .btn-sm:last-child {
+  border-radius: 0 5px 5px 0;
+}
+
+.btn-active {
+  background: var(--text);
+  border-color: var(--text);
+  color: #fff;
+}
+
+.btn-danger {
+  background: var(--out-bg);
+  border-color: var(--out-bg);
+  color: var(--out-fg);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: var(--out-fg);
+  border-color: var(--out-fg);
+  color: #fff;
+  opacity: 1;
+}
+
 /* ===== 操作页双栏 ===== */
 .operation-grid {
   display: grid;
