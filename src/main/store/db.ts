@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { DB } from '@shared/types'
 
 /**
@@ -54,7 +54,7 @@ export function getDataFilePath(): string {
 
 /** 数据文件所在目录（用于界面上的「打开数据文件夹」） */
 export function getDataDir(): string {
-  return join(getDataFilePath(), '..')
+  return dirname(getDataFilePath())
 }
 
 /** 同步读取当前内存快照。渲染进程取数据走这里，不碰磁盘。 */

@@ -60,6 +60,29 @@ function seed(): DB {
     mk('i1', '2026-08-20T10:00', 'M3×8 螺丝', '个', 5, 'in', '张三')
   ]
 
+  // ?seed=N 额外灌 N 条记录，用来观察「记录攒多了」时界面的表现
+  const seedParam = Number(new URLSearchParams(location.search).get('seed') ?? 0)
+  if (Number.isFinite(seedParam) && seedParam > 0) {
+    const n = Math.min(Math.floor(seedParam), 50000)
+    for (let i = 0; i < n; i++) {
+      const it = items[i % items.length]
+      const day = String((i % 28) + 1).padStart(2, '0')
+      const hh = String(i % 24).padStart(2, '0')
+      const mm = String((i * 7) % 60).padStart(2, '0')
+      records.push(
+        mk(
+          it.id,
+          `2026-09-${day}T${hh}:${mm}`,
+          it.name,
+          it.unit,
+          (i % 20) + 1,
+          i % 3 === 0 ? 'out' : 'in',
+          `员工${(i % 7) + 1}`
+        )
+      )
+    }
+  }
+
   return { version: 1, items, records }
 }
 

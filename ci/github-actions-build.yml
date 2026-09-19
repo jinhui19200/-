@@ -1,0 +1,86 @@
+# GitHub Actions 工作流 —— 待安装模板
+#
+# 为什么放在 ci/ 而不是 .github/workflows/：
+#   推送 `.github/workflows/` 下的文件需要 token 具备 `workflow` scope，
+#   当前凭据没有该权限，GitHub 会直接拒绝推送。
+#   所以先把内容存在这里，需要时手动安装。
+#
+# 安装方式（二选一）：
+#
+#   A. 网页上安装（推荐，最省事）
+#      1. 打开 https://github.com/jinhui19200/-/actions
+#      2. 点「New workflow」→「set up a workflow yourself」
+#      3. 文件名填 build.yml，路径保持 .github/workflows/build.yml
+#      4. 把本文件从 `name:` 开始的内容全部贴进去，提交
+#
+#   B. 给 token 补权限后自动推送
+#      1. 终端执行： gh auth refresh -s workflow   （或重新登录时勾上 workflow）
+#      2. 然后： git mv ci/github-actions-build.yml .github/workflows/build.yml
+#         mkdir -p .github/workflows 若不存在，再 git commit && git push
+#
+# 触发方式：
+#   推 tag 即打包，例如  git tag v1.0.0 && git push origin v1.0.0
+#   打包产物在 Actions 页面的 Artifacts 里下载。
+#
+# 说明：macOS 与 Windows 的安装包都未做代码签名，
+#   用户在系统里首次打开会被拦截（macOS 需在「隐私与安全性」里放行，
+#   Windows 需在 SmartScreen 提示里选「仍要运行」）。
+
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+jobs:
+  # 先跑类型检查与数据层自检，两者都过才允许打包
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run verify:store
+
+  build-mac:
+    runs-on: macos-latest
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-installer
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  build-win:
+    runs-on: windows-latest
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-installer
+          path: dist/*.exe
+          if-no-files-found: error
