@@ -127,15 +127,43 @@ const rowCount = (page) => page.evaluate(() => document.querySelectorAll('tbody 
 const countLabel = (page) =>
   page.evaluate(() => document.querySelector('.count')?.textContent?.trim() ?? '')
 
-/** 仓库页某个物品所在行的各单元格文本 */
+/**
+ * 仓库页某个物品所在行，返回 `{ 表头名: 单元格值 }`。
+ *
+ * 刻意不用下标取值：加一列就会让所有下标**静默错位**。
+ * 新增「警戒值」列时就是这样让 4 处断言同时失效的，
+ * 而且报出来的是「值不对」，看不出根因是列错位，排查很费时间。
+ *
+ * 表头名本身也会随内容变化（「本月入库（9月）」带月份、「单位（已锁定）」带锁定标记），
+ * 所以统一去掉括号内容作为规范名。
+ *
+ * 注意：读取逻辑必须在 page.evaluate 内部重新写一遍 —— 这个文件跑在 Node 里，
+ * 定义在模块顶层的函数进不了页面上下文。
+ */
 const warehouseRow = (page, name) =>
   page.evaluate((n) => {
+    const read = (row) => {
+      const ths = [...row.closest('table').querySelectorAll('thead th')]
+      const out = {}
+      ths.forEach((th, i) => {
+        const key = th.textContent.trim().replace(/（[^）]*）|\([^)]*\)/g, '').trim()
+        const td = row.querySelectorAll('td')[i]
+        if (!td) return
+        // 单元格里可能是 <input>（如警戒值），它的 textContent 恒为空串，必须读 .value
+        const input = td.querySelector('input')
+        out[key] = input ? input.value : td.textContent.trim()
+      })
+      return out
+    }
     const tr = [...document.querySelectorAll('tbody tr')].find(
       (r) => r.querySelector('td')?.textContent?.trim() === n
     )
-    if (!tr) return null
-    return [...tr.querySelectorAll('td')].map((td) => td.textContent.trim())
+    return tr ? read(tr) : null
   }, name)
+
+/** 把 { 表头名: 值 } 打成一行，失败信息里能看清到底取到了什么 */
+const rowText = (row) =>
+  row ? Object.entries(row).map(([k, v]) => `${k}=${v}`).join(' / ') : '(没有这一行)'
 
 /**
  * 量表格：每列的表头与数据是否对齐、有没有列分割线。
@@ -262,7 +290,11 @@ async function run(page, shot) {
         (r) => r.querySelector('td')?.textContent?.trim() === n
       )
       if (!tr) return null
-      const td = tr.querySelectorAll('td')[1]
+      // 按表头名定位「数量」列，不按下标 —— 加列时下标会静默错位
+      const ths = [...tr.closest('table').querySelectorAll('thead th')]
+      const i = ths.findIndex((th) => th.textContent.trim() === '数量')
+      if (i < 0) throw new Error('仓库表里找不到「数量」列')
+      const td = tr.querySelectorAll('td')[i]
       const cs = getComputedStyle(td)
       return {
         text: td.textContent.trim(),
@@ -595,12 +627,16 @@ async function run(page, shot) {
   await page.waitForTimeout(400)
   check('仓库页物品数 5 → 6', (await rowCount(page)) === 6, `${await rowCount(page)}`)
   const newRow = await warehouseRow(page, '排针 2.54mm')
-  check('新物品库存 = 300，单位 = 排', newRow?.[1] === '300' && newRow?.[2] === '排', newRow?.join(' / '))
+  check(
+    '新物品库存 = 300，单位 = 排',
+    newRow?.['数量'] === '300' && newRow?.['单位'] === '排',
+    rowText(newRow)
+  )
   await shot(page, '5-new-item')
 
   // 6d 已有物品累加
   const before = await warehouseRow(page, '铜线 1.5mm²')
-  check('铜线当前库存 -15（负数高亮）', before?.[1] === '-15', before?.[1])
+  check('铜线当前库存 -15（负数高亮）', before?.['数量'] === '-15', rowText(before))
   await switchTab(page, '操作')
   await page.waitForTimeout(300)
   await nameInput.fill('铜线 1.5mm²')
@@ -611,7 +647,7 @@ async function run(page, shot) {
   await switchTab(page, '仓库')
   await page.waitForTimeout(400)
   const after = await warehouseRow(page, '铜线 1.5mm²')
-  check('入库 45 后铜线库存 -15 → 30（跨页自动刷新）', after?.[1] === '30', after?.[1])
+  check('入库 45 后铜线库存 -15 → 30（跨页自动刷新）', after?.['数量'] === '30', rowText(after))
 
   // ── 7. 撤销反向冲销 ──────────────────────────────────────
   // 上一节提交了两笔（排针新建 + 铜线入库 45），所以 9 → 11
@@ -619,10 +655,25 @@ async function run(page, shot) {
   await switchTab(page, '记录')
   await page.waitForTimeout(400)
   check('记录数 9 → 11（上一节新增两笔）', (await rowCount(page)) === 11, `${await rowCount(page)}`)
-  const firstRow = await page.evaluate(() =>
-    [...document.querySelectorAll('tbody tr td')].slice(0, 6).map((td) => td.textContent.trim())
+  const firstRow = await page.evaluate(() => {
+    const tr = document.querySelector('tbody tr')
+    if (!tr) return null
+    const ths = [...tr.closest('table').querySelectorAll('thead th')]
+    const out = {}
+    ths.forEach((th, i) => {
+      const key = th.textContent.trim().replace(/（[^）]*）|\([^)]*\)/g, '').trim()
+      const td = tr.querySelectorAll('td')[i]
+      if (td) out[key] = td.textContent.trim()
+    })
+    return out
+  })
+  check(
+    '最新一条是刚提交的铜线入库 45',
+    firstRow?.['名称'] === '铜线 1.5mm²' &&
+      firstRow?.['数量'] === '45' &&
+      firstRow?.['类型'] === '入库',
+    rowText(firstRow)
   )
-  check('最新一条是刚提交的铜线入库 45', firstRow[1] === '铜线 1.5mm²' && firstRow[2] === '45' && firstRow[5] === '入库', firstRow.join(' / '))
 
   await page.evaluate(() => {
     ;[...document.querySelectorAll('tbody tr')][0].querySelector('button').click()
@@ -634,11 +685,56 @@ async function run(page, shot) {
   await switchTab(page, '仓库')
   await page.waitForTimeout(400)
   const undone = await warehouseRow(page, '铜线 1.5mm²')
-  check('铜线库存 30 → -15（撤销反向冲销）', undone?.[1] === '-15', undone?.[1])
+  check('铜线库存 30 → -15（撤销反向冲销）', undone?.['数量'] === '-15', rowText(undone))
   await shot(page, '6-after-undo')
 
-  // ── 8. 控制台 ────────────────────────────────────────────
-  section('8. 渲染进程控制台')
+  // ── 8. 操作页表单的时间默认值 ────────────────────────────
+  // 默认时间是**表单挂载那一刻**取的。停在操作页跨过零点，默认值就成了昨天的日期。
+  // 这里用假时钟把「跨零点」造出来 —— 否则只能干等一天，等于没有覆盖。
+  //
+  // 刻意不用 page.reload()：重载会打断前面所有小节积累的状态，
+  // 而且时钟冻结后 React 的调度可能不刷新。切页签同样能让表单重新挂载，
+  // 且点击是离散事件，React 会同步 flush，不依赖定时器。
+  section('8. 操作页表单时间默认值')
+
+  await switchTab(page, '仓库') // 先离开操作页，确保表单处于卸载状态
+  await page.waitForTimeout(200)
+  await page.clock.install({ time: new Date('2026-09-19T23:58:00') })
+  await switchTab(page, '操作')
+  await page.waitForTimeout(400)
+
+  // 变量名带 clock 前缀：本文件 run() 是单个大函数作用域，
+  // 第 6 节已经声明过 inForm / nameInput / qtyInput，重名会直接语法报错。
+  const clockForm = page.locator('.tx-form').first()
+  const clockTime = clockForm.locator('input[type="datetime-local"]')
+  const clockName = clockForm.locator('input[type="text"]').first()
+  const clockQty = clockForm.locator('input[type="number"]')
+
+  check(
+    '表单挂载时默认时间就是当前时刻',
+    (await clockTime.inputValue()) === '2026-09-19T23:58',
+    await clockTime.inputValue()
+  )
+
+  await page.clock.fastForward(10 * 60 * 1000) // 时间前进 10 分钟，跨过零点
+
+  await clockName.click() // 用户开始操作表单，但没碰时间框
+  check(
+    '跨零点后一操作表单，默认时间校准到次日',
+    (await clockTime.inputValue()) === '2026-09-20T00:08',
+    await clockTime.inputValue()
+  )
+
+  await clockTime.fill('2026-09-20T09:30') // 手动改时间 → 之后不该再被刷新覆盖
+  await clockQty.click()
+  check(
+    '手动改过的时间不会被聚焦刷新覆盖',
+    (await clockTime.inputValue()) === '2026-09-20T09:30',
+    await clockTime.inputValue()
+  )
+
+  // ── 9. 控制台 ────────────────────────────────────────────
+  section('9. 渲染进程控制台')
   check('无 console.error / pageerror', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 }
 

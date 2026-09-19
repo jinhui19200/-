@@ -21,6 +21,16 @@ export function TransactionForm({
   onCancel
 }: Props): React.JSX.Element {
   const [time, setTime] = useState(toLocalDateTime())
+  /**
+   * 用户是否手动改过时间。
+   *
+   * 默认时间是**挂载那一刻**取的，表单停在操作页跨过零点后就成了昨天的日期。
+   * 所以用户一开始操作表单就重新取「此刻」—— 但他要是手动改过，就尊重他的输入。
+   *
+   * 刻意不做「提交时才取当前时间」：那样屏幕上显示 09:00、记进流水却是 10:00，
+   * 显示与结果不一致比默认值略旧更难排查。这里保证两者始终一致。
+   */
+  const [timeEdited, setTimeEdited] = useState(false)
   const [name, setName] = useState(initialName ?? '')
   const [quantity, setQuantity] = useState('')
   const [unit, setUnit] = useState('')
@@ -76,6 +86,16 @@ export function TransactionForm({
     Number(quantity) > 0 &&
     (matchedItem ? true : unit.trim() !== '')
 
+  /**
+   * 表单内任意控件获得焦点时调用（React 的 onFocus 是 focusin 语义，会冒泡）。
+   *
+   * 提交前必须先输入名称和数量，也就必然会触发一次聚焦，
+   * 因此「聚焦即校准时间」足以覆盖所有提交路径，不需要额外定时器。
+   */
+  const handleFormFocus = (): void => {
+    if (!timeEdited) setTime(toLocalDateTime())
+  }
+
   const handleSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault()
     if (!isValid || submitting) return
@@ -93,6 +113,7 @@ export function TransactionForm({
       })
       // 提交成功清空表单（保留操作人，减少重复输入）
       setTime(toLocalDateTime())
+      setTimeEdited(false)
       setName('')
       setQuantity('')
       setUnit('')
@@ -108,13 +129,16 @@ export function TransactionForm({
   const accent = type === 'in' ? 'var(--in-fg)' : 'var(--out-fg)'
 
   return (
-    <form onSubmit={handleSubmit} className="tx-form">
+    <form onSubmit={handleSubmit} onFocus={handleFormFocus} className="tx-form">
       <div className="tx-field">
         <label>时间</label>
         <input
           type="datetime-local"
           value={time}
-          onChange={(e) => setTime(e.target.value)}
+          onChange={(e) => {
+            setTime(e.target.value)
+            setTimeEdited(true)
+          }}
           required
         />
       </div>

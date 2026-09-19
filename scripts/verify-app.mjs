@@ -158,28 +158,61 @@ const switchTab = (page, name) =>
 
 const rowCount = (page) => page.evaluate(() => document.querySelectorAll('tbody tr').length)
 
+/**
+ * 仓库页某个物品所在行，返回 `{ 表头名: 单元格值 }`。
+ *
+ * 刻意不用下标取值：加一列就会让所有下标**静默错位**。
+ * 新增「警戒值」列时就是这样让 4 处断言同时失效的，
+ * 而且报出来的是「值不对」，看不出根因是列错位，排查很费时间。
+ *
+ * 表头名会随内容变化（「本月入库（9月）」带月份、「单位（已锁定）」带锁定标记），
+ * 统一去掉括号内容作为规范名。
+ */
 const warehouseRow = (page, name) =>
   page.evaluate((n) => {
+    const read = (row) => {
+      const ths = [...row.closest('table').querySelectorAll('thead th')]
+      const out = {}
+      ths.forEach((th, i) => {
+        const key = th.textContent.trim().replace(/（[^）]*）|\([^)]*\)/g, '').trim()
+        const td = row.querySelectorAll('td')[i]
+        if (!td) return
+        // 警戒值单元格里是 <input>，textContent 恒为空串，必须读 .value
+        const input = td.querySelector('input')
+        out[key] = input ? input.value : td.textContent.trim()
+      })
+      return out
+    }
     const tr = [...document.querySelectorAll('tbody tr')].find(
       (r) => r.querySelector('td')?.textContent?.trim() === n
     )
-    return tr ? [...tr.querySelectorAll('td')].map((td) => td.textContent.trim()) : null
+    return tr ? read(tr) : null
   }, name)
 
-/** 真实窗口里某物品的库存是否低于警戒值（看数量单元格的类名） */
+/** 把 { 表头名: 值 } 打成一行，失败信息里能看清到底取到了什么 */
+const rowText = (row) =>
+  row ? Object.entries(row).map(([k, v]) => `${k}=${v}`).join(' / ') : '(没有这一行)'
+
+/** 真实窗口里某物品的库存是否低于警戒值（看「数量」单元格的类名） */
 const quantityIsLow = (page, name) =>
   page.evaluate((n) => {
     const tr = [...document.querySelectorAll('tbody tr')].find(
       (r) => r.querySelector('td')?.textContent?.trim() === n
     )
     if (!tr) return null
-    return tr.querySelectorAll('td')[1].classList.contains('below-threshold')
+    // 按表头名定位「数量」列，不按下标 —— 加列时下标会静默错位
+    const ths = [...tr.closest('table').querySelectorAll('thead th')]
+    const i = ths.findIndex((th) => th.textContent.trim() === '数量')
+    if (i < 0) throw new Error('仓库表里找不到「数量」列')
+    return tr.querySelectorAll('td')[i].classList.contains('below-threshold')
   }, name)
 
 /**
  * 真实窗口里某物品的警戒值。
- * 必须读 input.value —— 单元格里是 <input>，它的 textContent 恒为空串，
- * 拿 warehouseRow 的下标去比会得到一个假失败。
+ *
+ * 专门读输入框的 .value：单元格里是 <input>，它的 textContent 恒为空串。
+ * warehouseRow 现在也会对含 input 的单元格返回 .value，两种写法都对；
+ * 这里保留独立访问器，是为了让「警戒值取自输入框」这件事在断言处一眼可见。
  */
 const thresholdOf = (page, name) =>
   page.evaluate((n) => {
@@ -325,7 +358,7 @@ try {
   await switchTab(page, '仓库')
   await sleep(400)
   const row1 = await warehouseRow(page, 'M3×8 螺丝')
-  check('仓库页显示库存 100', row1?.[1] === '100', row1?.join(' / '))
+  check('仓库页显示库存 100', row1?.['数量'] === '100', rowText(row1))
   check('仓库页显示警戒值 100', (await thresholdOf(page, 'M3×8 螺丝')) === '100', await thresholdOf(page, 'M3×8 螺丝'))
   check('库存 100 不低于警戒值 100，不标红', (await quantityIsLow(page, 'M3×8 螺丝')) === false)
   await shot(page, '1-after-in')
@@ -352,7 +385,7 @@ try {
   await switchTab(page, '仓库')
   await sleep(400)
   const row2 = await warehouseRow(page, 'M3×8 螺丝')
-  check('库存变为 -30', row2?.[1] === '-30', row2?.[1])
+  check('库存变为 -30', row2?.['数量'] === '-30', rowText(row2))
 
   const after2 = await readJson(dataFile)
   check('磁盘上 2 条记录', after2.records.length === 2, `${after2.records.length}`)
@@ -382,8 +415,8 @@ try {
   await switchTab(page2, '仓库')
   await sleep(500)
   const restored = await warehouseRow(page2, 'M3×8 螺丝')
-  check('重启后仓库页仍有该物品', restored !== null, restored?.join(' / ') ?? '(没有)')
-  check('重启后库存仍为 -30', restored?.[1] === '-30', restored?.[1])
+  check('重启后仓库页仍有该物品', restored !== null, rowText(restored))
+  check('重启后库存仍为 -30', restored?.['数量'] === '-30', rowText(restored))
   const snap = await page2.evaluate(() => window.api.getSnapshot())
   check('重启后记录数仍为 2', snap.records.length === 2, `${snap.records.length}`)
   check('重启后未标记「已从备份恢复」', (await page2.evaluate(() => window.api.getLoadReport())).recoveredFromBackup === false)
@@ -408,7 +441,7 @@ try {
   await switchTab(page2, '仓库')
   await sleep(400)
   const undone = await warehouseRow(page2, 'M3×8 螺丝')
-  check('库存 -30 → 100（反向冲销）', undone?.[1] === '100', undone?.[1])
+  check('库存 -30 → 100（反向冲销）', undone?.['数量'] === '100', rowText(undone))
   const finalDisk = await readJson(dataFile)
   check('磁盘同步为 1 条记录', finalDisk.records.length === 1, `${finalDisk.records.length}`)
 

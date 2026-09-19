@@ -128,16 +128,42 @@ async function openWindow(): Promise<BrowserWindow> {
   return w
 }
 
-/** 仓库页第一行的各单元格文本（名称 / 数量 / 单位 / 本月入 / 本月出） */
-function firstRowCells(w: BrowserWindow): Promise<string[]> {
-  return evalIn<string[]>(
+/**
+ * 仓库页第一行，返回 `{ 表头名: 单元格值 }`。
+ *
+ * 刻意不用下标取值：加一列就会让所有下标**静默错位**。
+ * 新增「警戒值」列时就是这样让 4 处断言同时失效的，
+ * 而且报出来的是「值不对」，看不出根因是列错位，排查很费时间。
+ *
+ * 表头名本身也会随内容变化（「本月入库（9月）」带月份、「单位（已锁定）」带锁定标记），
+ * 所以统一去掉括号内容作为规范名。
+ */
+function firstRow(w: BrowserWindow): Promise<Record<string, string>> {
+  return evalIn<Record<string, string>>(
     w,
     `(() => {
        const tr = document.querySelector("tbody tr")
-       if (!tr) return []
-       return [...tr.querySelectorAll("td")].map(td => td.textContent ?? "")
+       if (!tr) return {}
+       const ths = [...tr.closest("table").querySelectorAll("thead th")]
+       const out = {}
+       ths.forEach((th, i) => {
+         const key = th.textContent.trim().replace(/（[^）]*）|\\([^)]*\\)/g, "").trim()
+         const td = tr.querySelectorAll("td")[i]
+         if (!td) return
+         // 警戒值单元格里是 <input>，textContent 恒为空串，必须读 .value
+         const input = td.querySelector("input")
+         out[key] = input ? input.value : (td.textContent ?? "").trim()
+       })
+       return out
      })()`
   )
+}
+
+/** 把 { 表头名: 值 } 打成一行，失败信息里能看清到底取到了什么 */
+function rowText(row: Record<string, string>): string {
+  const keys = Object.keys(row)
+  if (keys.length === 0) return '(没有这一行)'
+  return keys.map((k) => `${k}=${row[k]}`).join(' / ')
 }
 
 /** 数量单元格是否带负库存高亮 */
@@ -270,24 +296,16 @@ async function run(): Promise<void> {
 
   // ── 7. 界面随广播自动刷新 ────────────────────────────────────
   section('7. 界面自动刷新（无需手动切页）')
-  const rowReady = await waitFor(async () => (await firstRowCells(win!))[0] === 'M3×8 螺丝')
+  const rowReady = await waitFor(async () => (await firstRow(win!))['名称'] === 'M3×8 螺丝')
   check('仓库页自动出现该物品', rowReady)
-  const cells = await firstRowCells(win)
-  check('数量单元格 = -35', cells[1] === '-35', cells[1] ?? '(无)')
-  check('单位单元格 = 个（单位锁定生效）', cells[2] === '个', cells[2] ?? '(无)')
-  // 列顺序：名称 | 数量 | 单位 | 警戒值 | 本月入库 | 本月出库 | 操作
-  // 注意：警戒值单元格里是个 <input>，它的 textContent 永远是空串，
-  // 必须读 .value —— 直接比 textContent 会得到一个假失败。
-  const thresholdCell = await win!.webContents.executeJavaScript(
-    `(() => {
-       const tr = document.querySelector('tbody tr')
-       const input = tr && tr.querySelector('.threshold-input')
-       return input ? input.value : null
-     })()`
-  )
-  check('新物品警戒值默认为 100', thresholdCell === '100', String(thresholdCell))
-  check('本月入库 = +165', cells[4] === '+165', cells[4] ?? '(无)')
-  check('本月出库 = -200', cells[5] === '-200', cells[5] ?? '(无)')
+  const cells = await firstRow(win)
+  check('数量单元格 = -35', cells['数量'] === '-35', rowText(cells))
+  check('单位单元格 = 个（单位锁定生效）', cells['单位'] === '个', rowText(cells))
+  // 警戒值单元格里是 <input>，textContent 恒为空串 —— firstRow 内部已改为读 .value，
+  // 直接用 textContent 比会得到一个假失败（这个坑踩过一次）。
+  check('新物品警戒值默认为 100', cells['警戒值'] === '100', rowText(cells))
+  check('本月入库 = +165', cells['本月入库'] === '+165', rowText(cells))
+  check('本月出库 = -200', cells['本月出库'] === '-200', rowText(cells))
   check('负库存带高亮类名', await quantityIsNegative(win))
 
   // ── 8. 撤销反向冲销 ──────────────────────────────────────────
@@ -300,8 +318,8 @@ async function run(): Promise<void> {
   check('库存回到 165（-35 + 200）', del.ok && del.item?.quantity === 165, del.ok ? `${del.item?.quantity}` : '')
   const onDiskAfterUndo = await readJSON(dataFile)
   check('磁盘上该记录已移除', onDiskAfterUndo.records.every((r) => r.id !== outRec?.id))
-  const uiAfterUndo = await waitFor(async () => (await firstRowCells(win!))[1] === '165')
-  check('界面同步显示 165', uiAfterUndo, (await firstRowCells(win))[1] ?? '(无)')
+  const uiAfterUndo = await waitFor(async () => (await firstRow(win!))['数量'] === '165')
+  check('界面同步显示 165', uiAfterUndo, rowText(await firstRow(win)))
   check('负库存高亮随之消失', (await quantityIsNegative(win)) === false)
 
   // ── 9. 导出 ──────────────────────────────────────────────────
@@ -337,8 +355,8 @@ async function run(): Promise<void> {
   check('磁盘库存 = 165', reloaded.items[0]?.quantity === 165, `${reloaded.items[0]?.quantity}`)
 
   win = await openWindow()
-  const persisted = await waitFor(async () => (await firstRowCells(win!))[1] === '165')
-  check('重启后界面显示持久化的 165', persisted, (await firstRowCells(win))[1] ?? '(无)')
+  const persisted = await waitFor(async () => (await firstRow(win!))['数量'] === '165')
+  check('重启后界面显示持久化的 165', persisted, rowText(await firstRow(win)))
   const persistedRows = await evalIn<number>(win, 'document.querySelectorAll("tbody tr").length')
   check('重启后界面只有 1 行物品', persistedRows === 1, `${persistedRows}`)
   const noBanner = await evalIn<boolean>(win, '!document.querySelector(".warn-banner")')
@@ -381,8 +399,8 @@ async function run(): Promise<void> {
   check('界面显示「已从备份恢复」提示条', bannerShown)
   const bannerText = await evalIn<string>(win, 'document.querySelector(".warn-banner")?.textContent ?? ""')
   check('提示条文案说明了风险', bannerText.includes('可能丢失最后一次操作'), bannerText.replace(/\s+/g, ' ').trim())
-  const recoveredQty = await waitFor(async () => (await firstRowCells(win!))[1] === '-35')
-  check('界面显示的是恢复后的 -35', recoveredQty, (await firstRowCells(win))[1] ?? '(无)')
+  const recoveredQty = await waitFor(async () => (await firstRow(win!))['数量'] === '-35')
+  check('界面显示的是恢复后的 -35', recoveredQty, rowText(await firstRow(win)))
 
   // ── 12. 主文件与备份都坏 ─────────────────────────────────────
   section('12. 主文件与备份都不可用 → 明确报错而非静默空库')
