@@ -5,6 +5,13 @@
 
 ## 2026-09-19
 
+### 打包配置（P6）
+
+- `electron-builder.yml` 新增 macOS dmg 打包配置（arm64 + x64）
+- `package.json` 新增 `build:mac` 脚本
+- macOS arm64 打包已验证成功，产物位于 `dist/mac-arm64/库存管理系统.app`
+- GitHub Actions 工作流文件因 OAuth scope 限制无法推送，需手动在仓库设置中添加
+
 ### 记录页增强（P4）
 
 - 记录页新增搜索框（按名称模糊匹配）和出入库类型筛选（全部/入库/出库）

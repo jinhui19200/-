@@ -12,6 +12,15 @@ files:
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
 
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  artifactName: ${name}-${version}-${arch}.${ext}
+
 win:
   executableName: warehouse-manager
   target:
