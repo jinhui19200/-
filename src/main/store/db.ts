@@ -22,10 +22,29 @@ let cache: DB | null = null
 /** 串行队列的队尾 */
 let queue: Promise<unknown> = Promise.resolve()
 
+export interface LoadReport {
+  /** 主文件损坏，本次启动已从 .bak 恢复（界面需要提示用户） */
+  recoveredFromBackup: boolean
+}
+
+let loadReport: LoadReport = { recoveredFromBackup: false }
+
+/**
+ * 上一次加载的结果。
+ *
+ * 刻意用「查询状态」而不是「抛异常」来传达恢复成功：
+ * 恢复成功是**正常路径**，抛异常会让调用方误以为启动失败，
+ * 而启动流程里一个没人接的异常就会让整个应用起不来。
+ */
+export function getLoadReport(): LoadReport {
+  return { ...loadReport }
+}
+
 /** 初始化存储位置。主进程启动时调用一次；测试时可指向任意临时目录。 */
 export function initStore(dataDir: string): void {
   dataFile = join(dataDir, 'data.json')
   cache = null
+  loadReport = { recoveredFromBackup: false }
 }
 
 export function getDataFilePath(): string {
@@ -33,67 +52,14 @@ export function getDataFilePath(): string {
   return dataFile
 }
 
+/** 数据文件所在目录（用于界面上的「打开数据文件夹」） */
+export function getDataDir(): string {
+  return join(getDataFilePath(), '..')
+}
+
 /** 同步读取当前内存快照。渲染进程取数据走这里，不碰磁盘。 */
 export function getSnapshot(): DB {
   return cache ?? EMPTY_DB
-}
-
-/** 从磁盘加载。首次调用会读文件，之后走内存缓存。 */
-export async function load(): Promise<DB> {
-  if (cache) return cache
-
-  const target = getDataFilePath()
-  const bak = `${target}.bak`
-
-  // 先尝试读主文件
-  let raw: string | undefined
-  try {
-    raw = await fs.readFile(target, 'utf8')
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code
-    if (code === 'ENOENT') {
-      // 首次运行，还没有数据文件
-      cache = { ...EMPTY_DB }
-      return cache
-    }
-    // 文件存在但读不了 —— 尝试用备份恢复
-  }
-
-  // 主文件读成功 → 正常解析
-  if (raw !== undefined) {
-    try {
-      cache = parseDB(raw)
-      return cache
-    } catch {
-      // 解析失败 → 继续尝试备份恢复
-    }
-  }
-
-  // 主文件读不了或解析不了 → 尝试从 .bak 恢复
-  let recovered = false
-  try {
-    const bakRaw = await fs.readFile(bak, 'utf8')
-    const bakData = parseDB(bakRaw)
-    // 恢复成功后立刻重写 data.json，否则下一次 commit 的「先拷成备份」
-    // 会把损坏的主文件覆盖到那个唯一的好备份上，.bak 就废了。
-    await commit(bakData)
-    cache = bakData
-    recovered = true
-  } catch {
-    /* 备份也用不了 */
-  }
-
-  if (!recovered) {
-    throw new Error(
-      `数据文件损坏且无法从备份恢复（${target}）。\n` +
-        `建议检查备份：${bak}`
-    )
-  }
-
-  // 通知调用方「已从备份恢复」（通过异常抛出一个特殊标记）
-  const e = new Error(`RECovered_from_backup:${target}`)
-  ;(e as Error & { recoveredFromBackup: true }).recoveredFromBackup = true
-  throw e
 }
 
 function parseDB(raw: string): DB {
@@ -108,6 +74,63 @@ function parseDB(raw: string): DB {
     version: 1,
     items: Array.isArray(parsed.items) ? parsed.items : [],
     records
+  }
+}
+
+/**
+ * 从磁盘加载。首次调用会读文件，之后走内存缓存。
+ *
+ * 主文件读不了或解析不了时，自动回退到 `.bak`。
+ * 只有**主文件与备份都不可用**才抛错 —— 那种情况下没有任何数据可以继续，
+ * 调用方应当把错误原样展示给用户并停止启动，绝不能默默当成空库。
+ */
+export async function load(): Promise<DB> {
+  if (cache) return cache
+
+  const target = getDataFilePath()
+  const bak = `${target}.bak`
+
+  let raw: string | undefined
+  let primaryBroken = false
+
+  try {
+    raw = await fs.readFile(target, 'utf8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // 首次运行，还没有数据文件
+      cache = { ...EMPTY_DB }
+      return cache
+    }
+    // 文件存在但读不了 —— 走备份恢复
+    primaryBroken = true
+  }
+
+  if (!primaryBroken && raw !== undefined) {
+    try {
+      cache = parseDB(raw)
+      return cache
+    } catch {
+      // 解析失败（内容被改坏 / 被截断）—— 走备份恢复
+      primaryBroken = true
+    }
+  }
+
+  // 到这里说明主文件确实不可用，尝试从 .bak 恢复
+  try {
+    const bakData = parseDB(await fs.readFile(bak, 'utf8'))
+
+    // skipBackup 必须是 true：
+    // 否则 commit 会先把**损坏的**主文件拷成 .bak，把唯一的好备份覆盖掉，
+    // 下一次再出问题就没得救了。
+    await commit(bakData, true)
+
+    cache = bakData
+    loadReport = { recoveredFromBackup: true }
+    return cache
+  } catch {
+    throw new Error(
+      `数据文件损坏，且无法从备份恢复。\n主文件：${target}\n备份：${bak}`
+    )
   }
 }
 

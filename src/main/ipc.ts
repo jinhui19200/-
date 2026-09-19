@@ -1,7 +1,7 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron'
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { writeFile } from 'node:fs/promises'
 import type { TransactionInput } from '@shared/types'
-import { getSnapshot } from './store/db'
+import { getDataDir, getDataFilePath, getLoadReport, getSnapshot } from './store/db'
 import { applyTransaction, deleteRecord } from './store/transactions'
 
 /**
@@ -20,6 +20,19 @@ export function registerIpcHandlers(): void {
 
   /** 读取当前快照（纯内存，不碰磁盘） */
   ipcMain.handle('db:snapshot', () => getSnapshot())
+
+  /** 本次启动是否发生过「从备份恢复」，界面据此提示用户 */
+  ipcMain.handle('db:loadReport', () => getLoadReport())
+
+  /** 数据文件路径，界面上显示给用户看 */
+  ipcMain.handle('app:dataPath', () => getDataFilePath())
+
+  /** 在系统文件管理器里打开数据文件所在目录 */
+  ipcMain.handle('app:openDataFolder', async () => {
+    const dir = getDataDir()
+    const err = await shell.openPath(dir)
+    return err ? { ok: false, error: err } : { ok: true, path: dir }
+  })
 
   /** 出库 / 入库 —— 三个页面共用这一个通道 */
   ipcMain.handle('db:transaction', async (_event, input: TransactionInput) => {

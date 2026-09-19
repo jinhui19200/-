@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow } from 'electron'
+import { app, shell, BrowserWindow, dialog } from 'electron'
 import { join } from 'node:path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
@@ -55,7 +55,20 @@ if (!gotTheLock) {
     // 先定位数据文件并加载完成，再开窗口 —— 保证渲染进程一启动就能拿到数据，
     // 不会出现「界面已渲染、数据还没到位」的空窗期
     initStore(app.getPath('userData'))
-    await load()
+
+    try {
+      await load()
+    } catch (err) {
+      // 主文件与备份都读不了 —— 把原因和路径原样告诉用户，然后退出。
+      // 绝不能默默当成空库继续：那样用户一操作就会把仅存的数据覆盖掉。
+      dialog.showErrorBox(
+        '数据文件无法读取',
+        `${err instanceof Error ? err.message : String(err)}\n\n` +
+          '程序将退出。请先备份数据目录，再处理损坏的文件。'
+      )
+      app.quit()
+      return
+    }
 
     registerIpcHandlers()
 

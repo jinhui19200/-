@@ -179,6 +179,15 @@ const api = {
     ok: false,
     error: '演示模式不会真的写出文件；真实应用中这里会弹出保存对话框'
   }),
+  // 带 ?recovered=1 打开即可预览「已从备份恢复」提示条的样子
+  getLoadReport: async (): Promise<{ recoveredFromBackup: boolean }> => ({
+    recoveredFromBackup: new URLSearchParams(location.search).has('recovered')
+  }),
+  getDataPath: async (): Promise<string> => '（演示模式：数据只存在浏览器内存里，没有文件）',
+  openDataFolder: async (): Promise<{ ok: boolean; error?: string }> => ({
+    ok: false,
+    error: '演示模式没有数据文件夹'
+  }),
   onChanged: (cb: () => void): number => {
     const id = ++subSeq
     subs.set(id, cb)

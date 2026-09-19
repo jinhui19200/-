@@ -15,7 +15,19 @@ const TABS: { key: TabKey; label: string }[] = [
 export default function App() {
   const [tab, setTab] = useState<TabKey>('warehouse')
   const [bridge, setBridge] = useState('通道检测中…')
-  const { db, ready, error, applyTransaction, deleteRecord, exportXlsx } = useAppData()
+  const [folderMsg, setFolderMsg] = useState('')
+
+  const {
+    db,
+    ready,
+    error,
+    recoveredFromBackup,
+    dataPath,
+    applyTransaction,
+    deleteRecord,
+    exportXlsx,
+    openDataFolder
+  } = useAppData()
 
   useEffect(() => {
     Promise.resolve()
@@ -24,6 +36,16 @@ export default function App() {
       .catch(() => setBridge('未检测到主进程通道（当前非 Electron 环境）'))
   }, [])
 
+  const handleOpenFolder = async (): Promise<void> => {
+    setFolderMsg('')
+    try {
+      const r = await openDataFolder()
+      if (!r.ok) setFolderMsg(r.error ?? '打开失败')
+    } catch (err) {
+      setFolderMsg(String(err))
+    }
+  }
+
   return (
     <div className="app">
       <header className="app-header">
@@ -31,7 +53,25 @@ export default function App() {
         <span className="bridge-status">
           {error ? `数据读取异常：${error}` : bridge}
         </span>
+        <span className="header-spacer" />
+        {folderMsg && <span className="header-msg">{folderMsg}</span>}
+        <button
+          type="button"
+          className="btn btn-sm"
+          onClick={() => void handleOpenFolder()}
+          title={dataPath ? `数据文件：${dataPath}` : '打开数据文件所在文件夹'}
+        >
+          打开数据文件夹
+        </button>
       </header>
+
+      {recoveredFromBackup && (
+        <div className="warn-banner">
+          <strong>已从备份恢复。</strong>
+          上次运行时有数据文件损坏，程序自动读取了备份，可能丢失最后一次操作。
+          建议现在核对一下数据。
+        </div>
+      )}
 
       <nav className="tabs">
         {TABS.map((t) => (

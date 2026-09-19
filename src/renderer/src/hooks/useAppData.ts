@@ -7,6 +7,10 @@ export interface AppData {
   db: DB
   ready: boolean
   error: string
+  /** 本次启动是否发生过「从备份恢复」（界面需要提示用户） */
+  recoveredFromBackup: boolean
+  /** 数据文件完整路径，用于界面展示 */
+  dataPath: string
   refresh: () => Promise<void>
   applyTransaction: (input: TransactionInput) => Promise<TransactionResult>
   deleteRecord: (id: string) => Promise<DeleteRecordResult>
@@ -16,6 +20,7 @@ export interface AppData {
     cancelled?: boolean
     error?: string
   }>
+  openDataFolder: () => Promise<{ ok: boolean; path?: string; error?: string }>
 }
 
 /**
@@ -28,6 +33,8 @@ export function useAppData(): AppData {
   const [db, setDb] = useState<DB>(EMPTY_DB)
   const [ready, setReady] = useState(false)
   const [error, setError] = useState('')
+  const [recoveredFromBackup, setRecoveredFromBackup] = useState(false)
+  const [dataPath, setDataPath] = useState('')
 
   const refresh = useCallback(async (): Promise<void> => {
     const snapshot = await window.api.getSnapshot()
@@ -52,12 +59,13 @@ export function useAppData(): AppData {
     [refresh]
   )
 
-  const exportXlsx = useCallback(
-    async (data: number[], defaultName: string) => {
-      return window.api.exportXlsx(data, defaultName)
-    },
-    []
-  )
+  const exportXlsx = useCallback(async (data: number[], defaultName: string) => {
+    return window.api.exportXlsx(data, defaultName)
+  }, [])
+
+  const openDataFolder = useCallback(async () => {
+    return window.api.openDataFolder()
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -71,6 +79,20 @@ export function useAppData(): AppData {
         if (!cancelled) setError(String(err))
       } finally {
         if (!cancelled) setReady(true)
+      }
+
+      // 这两项是「锦上添花」的信息，拿不到也不该影响主流程
+      try {
+        const report = await window.api.getLoadReport()
+        if (!cancelled) setRecoveredFromBackup(report.recoveredFromBackup)
+      } catch {
+        /* 忽略 */
+      }
+      try {
+        const p = await window.api.getDataPath()
+        if (!cancelled) setDataPath(p)
+      } catch {
+        /* 忽略 */
       }
 
       try {
@@ -96,5 +118,16 @@ export function useAppData(): AppData {
     }
   }, [refresh])
 
-  return { db, ready, error, refresh, applyTransaction, deleteRecord, exportXlsx }
+  return {
+    db,
+    ready,
+    error,
+    recoveredFromBackup,
+    dataPath,
+    refresh,
+    applyTransaction,
+    deleteRecord,
+    exportXlsx,
+    openDataFolder
+  }
 }

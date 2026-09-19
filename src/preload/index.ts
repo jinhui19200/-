@@ -24,6 +24,17 @@ const api = {
   /** 读取当前数据快照（物品 + 记录） */
   getSnapshot: (): Promise<DB> => ipcRenderer.invoke('db:snapshot'),
 
+  /** 本次启动是否发生过「从备份恢复」 */
+  getLoadReport: (): Promise<{ recoveredFromBackup: boolean }> =>
+    ipcRenderer.invoke('db:loadReport'),
+
+  /** 数据文件完整路径 */
+  getDataPath: (): Promise<string> => ipcRenderer.invoke('app:dataPath'),
+
+  /** 在系统文件管理器里打开数据文件所在目录 */
+  openDataFolder: (): Promise<{ ok: boolean; path?: string; error?: string }> =>
+    ipcRenderer.invoke('app:openDataFolder'),
+
   /** 出库 / 入库 —— 三个页面共用这一个入口 */
   applyTransaction: (input: TransactionInput): Promise<TransactionResult> =>
     ipcRenderer.invoke('db:transaction', input),

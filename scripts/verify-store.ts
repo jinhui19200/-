@@ -9,7 +9,7 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getDataFilePath, getSnapshot, initStore, load } from '../src/main/store/db'
+import { getDataFilePath, getLoadReport, getSnapshot, initStore, load } from '../src/main/store/db'
 import { applyTransaction, deleteRecord } from '../src/main/store/transactions'
 
 let passed = 0
@@ -185,23 +185,54 @@ async function main(): Promise<void> {
 
   section('15. 损坏恢复：主文件坏掉时从 .bak 恢复')
   const target = getDataFilePath()
+  const bakPath = `${target}.bak`
   const goodContent = await readFile(target, 'utf8')
-  // 把主文件写坏
+  const goodBak = await readFile(bakPath, 'utf8')
+  const bakParsed = JSON.parse(goodBak) as { items: unknown[]; records: unknown[] }
+
+  // 把主文件写坏（模拟用户手工改坏 / 被截断）
   await writeFile(target, '这不是 JSON { 坏掉了')
-  // 清缓存，重新加载
+
   initStore(dir)
-  let recovered = false
+  let threw = false
   try {
     await load()
-  } catch (err) {
-    if ((err as Error & { recoveredFromBackup?: boolean }).recoveredFromBackup) {
-      recovered = true
-    }
+  } catch {
+    threw = true
   }
-  check('检测到损坏并从备份恢复', recovered)
+  // 这是关键：恢复成功是正常路径，抛异常会让启动流程直接挂掉
+  check('恢复成功时 load() 不抛异常', !threw)
+  check('loadReport 标记为「已从备份恢复」', getLoadReport().recoveredFromBackup === true)
+
   const restoredRaw = await readFile(target, 'utf8')
-  check('恢复后 data.json 是合法 JSON', (() => { try { JSON.parse(restoredRaw); return true } catch { return false } })())
-  // 清理：把好的写回去，避免影响后续测试
+  check(
+    '恢复后 data.json 是合法 JSON',
+    (() => {
+      try {
+        JSON.parse(restoredRaw)
+        return true
+      } catch {
+        return false
+      }
+    })()
+  )
+  check(
+    '恢复后物品数与备份一致',
+    getSnapshot().items.length === bakParsed.items.length,
+    `${getSnapshot().items.length} vs ${bakParsed.items.length}`
+  )
+  check(
+    '恢复后记录数与备份一致',
+    getSnapshot().records.length === bakParsed.records.length,
+    `${getSnapshot().records.length} vs ${bakParsed.records.length}`
+  )
+
+  // 最容易踩的坑：恢复时若照常「把当前主文件拷成备份」，
+  // 就会把损坏内容覆盖到唯一的好备份上，救命稻草当场作废
+  const bakAfter = await readFile(bakPath, 'utf8')
+  check('好备份没有被损坏的主文件覆盖', bakAfter === goodBak, `备份变成了 ${bakAfter.slice(0, 40)}…`)
+
+  // 清理：把好的写回去，避免影响后续用例
   await writeFile(target, goodContent)
 
   section('16. 旧数据无 operator 字段时自动补空串')
