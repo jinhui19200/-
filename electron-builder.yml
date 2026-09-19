@@ -14,6 +14,11 @@ files:
 
 mac:
   category: public.app-category.productivity
+  # 本机没有 Developer ID 证书，用 ad-hoc（"-"）签名。
+  # 不签的后果：arm64 包只有 Electron 自带的 linker 签名、bundle 无签名，
+  # 别人从网上下载后会被 Gatekeeper 判为「已损坏，无法打开」（无法右键绕过）。
+  # ad-hoc 签名后至少能走「右键 → 打开」放行。
+  identity: '-'
   target:
     - target: dmg
       arch:

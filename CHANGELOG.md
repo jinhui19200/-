@@ -5,6 +5,56 @@
 
 ## 2026-09-19
 
+### 打包 v1.0.0：macOS（arm64 + x64 DMG）+ Windows（NSIS）
+
+产物（均在 `dist/`）：
+
+| 文件 | 体积 | SHA256（前 16 位） |
+| --- | --- | --- |
+| `warehouse-manager-1.0.0-arm64.dmg` | 137 MB | `ad4e4baadec0a69e` |
+| `warehouse-manager-1.0.0-x64.dmg` | 145 MB | `8fa81da1eb0d30a0` |
+| `warehouse-manager-1.0.0-setup.exe` | 108 MB | `f287ba3f2199e9ed` |
+
+**修了一处会让安装包「打不开」的配置问题**
+
+- 本机没有任何 Developer ID 证书（`security find-identity` 返回 0 个），
+  electron-builder 找不到证书就**直接跳过签名**。后果不是「少个签名」这么轻：
+  arm64 包只有 Electron 二进制自带的 linker 签名、bundle 本身无签名
+  （`Identifier=Electron`、`Sealed Resources=none`），
+  别人从网上下载后会被 Gatekeeper 判为**「已损坏，无法打开」**，
+  而「已损坏」连「右键 → 打开」都绕不过去，只能敲 `xattr -d` 命令
+- 在 `electron-builder.yml` 里加 `mac.identity: '-'` 走 **ad-hoc 签名**。
+  签名后 `Identifier` 变成自己的 `com.jinhui.warehouse-manager`、
+  `Sealed Resources version=2 files=10`、`codesign --verify --deep --strict` 通过。
+  至少能走「右键 → 打开」放行，而不是被判损坏
+- 顺带确认 entitlements 里带了 `com.apple.security.cs.disable-library-validation`
+  —— 缺这一条，ad-hoc + hardened runtime 的 Electron 应用会因库校验**启动即崩**
+
+**DMG 生成方式**
+
+- `electron-builder --mac` 的 dmg 步骤在命令沙箱里跑不通：
+  `dmgbuild` 会挂载卷再把 `.app` `ditto` 进去，而沙箱拒绝写 `/Volumes/...`
+  （`file-write-unlink` 被拒 500+ 项）
+- 改成 `.app` 先用 `electron-builder --mac --dir` 产出（含签名），
+  再用 `hdiutil create -srcfolder` 直接生成 DMG（不挂载卷），
+  卷内布局：`库存管理系统.app` + 指向 `/Applications` 的软链接
+- Windows 包**不需要 Wine**：electron-builder 26 会自己下载 NSIS 3.0.4.1.7
+  在 macOS 上直接出 `.exe`，实测 56 秒完成
+
+**打包后实测**
+
+- 从 arm64 DMG 挂载 → `ditto` 复制出来（`cp -R` 会因签名扩展属性 `com.apple.cs.*` 报
+  `Operation not permitted`，必须用 `ditto`）→ 签名仍有效
+- 启动打包后的应用，12 秒后进程存活；`SingletonLock` 与 Chromium 配置目录生成，
+  说明单实例锁与渲染进程都正常
+- 用 CDP 连上真实窗口读 DOM：标题、导航、表头「名称/数量/单位/**警戒值**/本月入库/本月出库/操作」、
+  5 行数据、3 行低于警戒值标红、表头汇总「3 种低于警戒值」—— 全部正确
+
+**待办（需要证书才能做）**
+
+- Windows 安装包未签名，用户首次运行会撞 SmartScreen 警告
+- macOS 未做公证（notarization），首次打开仍需右键放行
+
 ### 仓库页新增「警戒值」+ 应用图标换成用户提供的图
 
 **警戒值（每个物品一个，默认 100，可改）**
