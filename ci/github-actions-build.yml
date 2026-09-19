@@ -36,7 +36,7 @@ on:
     branches: [main]
 
 jobs:
-  # 先跑类型检查与数据层自检，两者都过才允许打包
+  # 先跑类型检查与三层自检，全过才允许打包
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -48,9 +48,11 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run verify:store
-      # 端到端自检（真实 Electron + IPC + 磁盘）—— 本地已验证 58 项全过。
-      # 这里默认不开，是因为它需要能起 Electron 窗口的环境（隐藏窗口也需要）；
-      # ubuntu-latest 上没有显示服务，要先装 xvfb 并用 xvfb-run 包起来。
+      # 界面自检：真实 Chromium 里量布局几何 + 跑交互（65 项）
+      - run: npx playwright install --with-deps chromium
+      - run: npm run verify:ui
+      # 端到端自检（真实 Electron + IPC + 磁盘，58 项）—— 默认不开：
+      # 它需要能起 Electron 窗口的环境（隐藏窗口也需要），ubuntu 上要先装 xvfb。
       # 想让它进 CI，把下面两行取消注释即可（首次跑建议先手动确认通过）：
       #
       # - run: sudo apt-get update && sudo apt-get install -y xvfb
