@@ -684,14 +684,71 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* 「按住图表左右拖动可调整时间」这类操作提示，比正文更淡 */
+.report-hint {
+  color: var(--text-faint);
+}
+
 .report-note {
   color: var(--warn-fg);
 }
 
+/* 时间窗口工具条：更早 / 区间 / 更晚 / 回到最新 */
+.report-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  font-size: 12px;
+}
+
+.range-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.range-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--bg);
+}
+
+/* 到头了要看得出来点不动，否则用户会以为按钮坏了 */
+.range-btn:disabled {
+  color: var(--text-faint);
+  cursor: default;
+  opacity: 0.5;
+}
+
+.range-btn-reset {
+  margin-left: auto;
+}
+
+/*
+ * 最小列宽 520px 而不是 340px —— 这个值是被柱子上的数值标注倒逼出来的：
+ * 窗口是 12 个月，每张卡要分 12 列。340px 时每列只有约 23px，
+ * 而「1200」这种四位数标注本身就有约 22px 宽，相邻两个月的标注会叠在一起。
+ * 520px 时每列约 38px，留得下。
+ */
 .report-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
   gap: 14px;
+  /* 按住图表左右拖动可以平移时间窗口。grab 光标提示「这里可以拖」 */
+  cursor: grab;
+  /* 横向手势归我们处理（用来平移窗口），纵向留给页面滚动 */
+  touch-action: pan-y;
+}
+
+/* 拖动过程中禁掉文字选中，否则拖着拖着会把物品名选成蓝色 */
+.report-grid.dragging {
+  cursor: grabbing;
+  user-select: none;
 }
 
 .report-card {

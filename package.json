@@ -1,6 +1,6 @@
 {
   "name": "warehouse-manager",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "库存管理系统 —— 仓库、记录、出入库操作",
   "main": "./out/main/index.js",
   "author": "lin",
@@ -15,6 +15,7 @@
     "verify:electron": "esbuild scripts/verify-electron.ts --bundle --platform=node --format=cjs --external:electron --alias:@shared=./src/shared --outfile=out/verify-electron.cjs --log-level=warning && electron out/verify-electron.cjs",
     "verify:ui": "npm run build && node scripts/verify-ui.mjs",
     "verify:app": "npm run build && node scripts/verify-app.mjs",
+    "verify:packaged": "node scripts/verify-packaged.mjs",
     "build": "electron-vite build",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:mac": "npm run build && electron-builder --mac",

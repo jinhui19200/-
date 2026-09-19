@@ -4,13 +4,31 @@ productName: 库存管理系统
 directories:
   buildResources: build
 
+# 打包内容用**白名单**，不是黑名单。
+#
+# 原先只写了几条排除项，等于「其余全收」。后果是三轮 release 都把开发期产物
+# 打进了 app.asar：1.6MB 的验证截图（out/verify-ui/*.png、out/report-*.png）、
+# 39KB 的内部工作笔记（.workbuddy-ai/memory/）、scripts/、preview/、ci/、
+# 以及两个 *.command 启动脚本。装到用户机器上的包里有这些东西，纯属噪音。
+#
+# 黑名单的根本问题：它只能挡住已知的目录，以后新冒出来的开发目录会默认被打进去
+# （这次就是这么漏的 —— 验证截图是后来才生成的，没人想到要补一条排除）。
+# 白名单反过来，没列出来的一律不进，新增开发目录默认是安全的。
 files:
-  - '!**/.vscode/*'
-  - '!src/*'
-  - '!electron.vite.config.{js,ts,mjs,cjs}'
-  - '!{.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
-  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
-  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - package.json
+  - out/main/**/*
+  - out/preload/**/*
+  - out/renderer/**/*
+  - node_modules/**/*
+  # xlsx 是渲染进程 import 的，会被 Vite 整个打进 out/renderer 的 bundle。
+  # 已核实：渲染 bundle 里**零个 require()**，main / preload 也没引用它 ——
+  # 也就是说 asar 里这份 node_modules/xlsx 是死重，占了 7MB 里的 5.9MB。
+  # 之所以敢删，是因为有断言盯着 bundle 里确实带着 xlsx 的编码器（见 verify-ui）；
+  # 哪天真把导出挪到主进程，那条断言会先变红，而不是打包后静默失效。
+  - '!node_modules/xlsx/**/*'
+  # xlsx 的 dist 里还带着 ~2MB 的 source map，运行期用不到
+  - '!**/*.map'
+  - '!**/{.DS_Store,Thumbs.db}'
 
 mac:
   category: public.app-category.productivity

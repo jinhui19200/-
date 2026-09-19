@@ -19,7 +19,7 @@
  *   VERIFY_UI_SHOTS=1 把截图写到 out/verify-ui/（out/ 已在 .gitignore 里）
  */
 import { spawn } from 'node:child_process'
-import { mkdir, readdir, stat } from 'node:fs/promises'
+import { mkdir, readdir, readFile, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -436,7 +436,7 @@ async function run(page, shot) {
     const snap = await window.api.getSnapshot()
     return snap.records.length
   })
-  check('改警戒值没有写进出库记录', recordsAfterThreshold === 17, `${recordsAfterThreshold}`)
+  check('改警戒值没有写进出库记录', recordsAfterThreshold === 33, `${recordsAfterThreshold}`)
 
   // 数据层确实存下了新警戒值（不是只改了界面）
   const persisted = await page.evaluate(async () => {
@@ -481,7 +481,10 @@ async function run(page, shot) {
           }
         })
       return {
+        // 短标签（4月）与完整月份（2026-04）都要：断言用完整月份定位，
+        // 短标签只用来验显示。**不要用下标定位柱子** —— 窗口月数一改下标全错位。
         labels: [...card.querySelectorAll('.plot-label')].map((e) => e.textContent.trim()),
+        months: [...card.querySelectorAll('.plot-label')].map((e) => e.getAttribute('title')),
         // 两个刻度列各自的标签。正常是 [上半: 最大值] / [下半: 0, 最大值]；
         // 窗口内零出入库时上半为空、下半只剩「0」（见 .plot-idle 的处理）
         gutters: [...card.querySelectorAll('.plot-gutter')].map((g) =>
@@ -497,6 +500,19 @@ async function run(page, shot) {
       }
     }, name)
 
+  /**
+   * 按**月份**取柱子，而不是按下标。
+   *
+   * 原来写的是 barsIn[2] 表示 6 月 —— 那是按「窗口 = 最近 6 个月」算出来的下标。
+   * 窗口改成 12 个月后同一个下标指向完全不同的月份，一批断言会静默错位
+   * （值不对但报错信息看起来像数据问题）。按月份查就没有这个问题。
+   */
+  const barAt = (c, month, dir) => {
+    const i = c.months.indexOf(month)
+    if (i < 0) return null
+    return dir === 'in' ? c.barsIn[i] : c.barsOut[i]
+  }
+
   const cardCount = await page.evaluate(() => document.querySelectorAll('.report-card').length)
   check('仓库里每个物品一张卡片（6 个物品 → 6 张）', cardCount === 6, `${cardCount}`)
 
@@ -505,8 +521,14 @@ async function run(page, shot) {
 
   if (card) {
     check(
-      '横轴是最近 6 个自然月',
-      card.labels.join('|') === '4月|5月|6月|7月|8月|9月',
+      '横轴是最近 12 个自然月（默认窗口）',
+      card.months.join('|') ===
+        '2025-10|2025-11|2025-12|2026-01|2026-02|2026-03|2026-04|2026-05|2026-06|2026-07|2026-08|2026-09',
+      card.months.join('|')
+    )
+    check(
+      '月份短标签正确（12 月是两位数）',
+      card.labels.join('|') === '10月|11月|12月|1月|2月|3月|4月|5月|6月|7月|8月|9月',
       card.labels.join('|')
     )
 
@@ -537,15 +559,57 @@ async function run(page, shot) {
     check('入库柱全部在零轴上方', inAbove, JSON.stringify(card.barsIn.map((b) => [b.h, b.bottom])))
     check('出库柱全部在零轴下方', outBelow, JSON.stringify(card.barsOut.map((b) => [b.h, b.top])))
 
-    // 数值取自 title：顺带验证「按物品 + 按月聚合」算对了
-    check('6 月入库 300', card.barsIn[2].title === '2026-06 入库 300', card.barsIn[2].title)
-    check('7 月出库 150', card.barsOut[3].title === '2026-07 出库 150', card.barsOut[3].title)
-    check('9 月入库 150（同月两笔 100+50 合并）', card.barsIn[5].title === '2026-09 入库 150', card.barsIn[5].title)
-    check('9 月出库 20', card.barsOut[5].title === '2026-09 出库 20', card.barsOut[5].title)
+    // 月份标签必须落在对应柱子的正下方。
+    // 12 列时偏差才看得出来，而肉眼判断不可靠 —— 量出来。
+    // 比的是「列」的中心而不是柱子的中心：柱子只占列宽的 56%。
+    const align = await page.evaluate(() => {
+      const c = [...document.querySelectorAll('.report-card')].find(
+        (x) => x.querySelector('.report-name')?.textContent?.trim() === 'M3×8 螺丝'
+      )
+      const mid = (el) => {
+        const r = el.getBoundingClientRect()
+        return r.x + r.width / 2
+      }
+      const cols = [...c.querySelectorAll('.plot-in .plot-col')].map(mid)
+      const labels = [...c.querySelectorAll('.plot-label')].map(mid)
+      const bars = [...c.querySelectorAll('.plot-in .plot-bar')].map(mid)
+      return {
+        n: cols.length,
+        labelDev: Math.max(...labels.map((x, i) => Math.abs(x - cols[i]))),
+        barDev: Math.max(...bars.map((x, i) => Math.abs(x - cols[i])))
+      }
+    })
+    check(
+      '12 个月标签与柱子逐列对齐（偏差 <1px）',
+      align.n === 12 && align.labelDev < 1,
+      `${align.n} 列，最大偏差 ${align.labelDev.toFixed(1)}px`
+    )
+    check(
+      '柱子在各列内居中',
+      align.barDev < 1,
+      `最大偏差 ${align.barDev.toFixed(1)}px`
+    )
+
+    // 数值取自 title：顺带验证「按物品 + 按月聚合」算对了。
+    // 全部按月份查，不再按下标 —— 窗口月数变化不会让这些断言错位
+    const j6in = barAt(card, '2026-06', 'in')
+    const j7out = barAt(card, '2026-07', 'out')
+    const j9in = barAt(card, '2026-09', 'in')
+    const j9out = barAt(card, '2026-09', 'out')
+    check('6 月入库 300', j6in?.title === '2026-06 入库 300', String(j6in?.title))
+    check('7 月出库 150', j7out?.title === '2026-07 出库 150', String(j7out?.title))
+    check('9 月入库 150（同月两笔 100+50 合并）', j9in?.title === '2026-09 入库 150', String(j9in?.title))
+    check('9 月出库 20', j9out?.title === '2026-09 出库 20', String(j9out?.title))
+
+    // 挑一个确定没有记录的月份。不能用窗口首月 ——
+    // 种子数据铺满 12 个月后首月（2025-10）也有记录了。
+    // 「M3×8 螺丝」在 2025-12 没有任何记录（当月只有电阻的出入库）
+    const emptyIn = barAt(card, '2025-12', 'in')
+    const emptyOut = barAt(card, '2025-12', 'out')
     check(
       '没有数据的月份柱高为 0（不是留空不画）',
-      card.barsIn[0].h === 0 && card.barsOut[0].h === 0,
-      `${card.barsIn[0].h}/${card.barsOut[0].h}`
+      emptyIn?.h === 0 && emptyOut?.h === 0,
+      `${emptyIn?.h}/${emptyOut?.h}`
     )
 
     // ── 柱子上的数值标注 ──
@@ -563,14 +627,14 @@ async function run(page, shot) {
       labelled.every((b) => b.value === numOf(b.title)),
       JSON.stringify(labelled.map((b) => [b.value, numOf(b.title)]))
     )
-    check('6 月入库柱标注 300', card.barsIn[2].value === '300', String(card.barsIn[2].value))
-    check('7 月出库柱标注 150', card.barsOut[3].value === '150', String(card.barsOut[3].value))
+    check('6 月入库柱标注 300', j6in?.value === '300', String(j6in?.value))
+    check('7 月出库柱标注 150', j7out?.value === '150', String(j7out?.value))
 
-    // 值为 0 不标：6 个月 × 上下两半，满屏的「0」比不标更难看
+    // 值为 0 不标：12 个月 × 上下两半，满屏的「0」比不标更难看
     check(
       '没有数据的月份不显示标注（避免满屏 0）',
-      card.barsIn[0].value === null && card.barsOut[0].value === null,
-      `${card.barsIn[0].value}/${card.barsOut[0].value}`
+      emptyIn?.value === null && emptyOut?.value === null,
+      `${emptyIn?.value}/${emptyOut?.value}`
     )
 
     // 标注要贴在**自己那根柱子**外侧：入库在上、出库在下。
@@ -603,11 +667,11 @@ async function run(page, shot) {
     )
 
     // 柱高与数值成比例：300 的柱应约为 150 的两倍（各留 3px 舍入误差）
-    const h300 = card.barsIn[2].h
-    const h150 = card.barsIn[5].h
+    const h300 = j6in?.h
+    const h150 = j9in?.h
     check(
       '柱高与数值成比例（300 的柱 ≈ 150 的两倍）',
-      Math.abs(h300 - 2 * h150) <= 3,
+      h300 > 0 && h150 > 0 && Math.abs(h300 - 2 * h150) <= 3,
       `300→${h300}px，150→${h150}px`
     )
 
@@ -630,13 +694,13 @@ async function run(page, shot) {
         (x) => x.querySelector('.report-name')?.textContent?.trim() === 'M3×8 螺丝'
       )
       if (!c) return null
-      // 两个 <b> 之间没有空白节点，整块 textContent 会粘成「入 455出 170」，
+      // 两个 <b> 之间没有空白节点，整块 textContent 会粘成「入 1095出 380」，
       // 分别取元素比按整串比更稳
       return [...c.querySelectorAll('.report-total b')].map((b) => b.textContent.trim())
     })
     check(
-      '卡片头部合计 = 入 455 / 出 170',
-      totals?.join(' | ') === '入 455 | 出 170',
+      '卡片头部合计 = 入 1095 / 出 380',
+      totals?.join(' | ') === '入 1095 | 出 380',
       JSON.stringify(totals)
     )
   }
@@ -654,7 +718,7 @@ async function run(page, shot) {
     )
     check(
       '零出入库时给出说明文字',
-      /^近 6 个月无出入库$/.test(idle.idleText ?? ''),
+      /^近 12 个月无出入库$/.test(idle.idleText ?? ''),
       String(idle.idleText)
     )
     check(
@@ -667,13 +731,96 @@ async function run(page, shot) {
       [...idle.barsIn, ...idle.barsOut].every((b) => b.value === null)
     )
     // 月份标签要照常显示 —— 否则用户分不清「没数据」和「图没画出来」
-    check('零出入库时横轴月份仍在', idle.labels.join('|') === '4月|5月|6月|7月|8月|9月', idle.labels.join('|'))
+    check('零出入库时横轴月份仍在', idle.months.length === 12 && idle.months[0] === '2025-10', idle.months.join('|'))
   }
   check(
     '有出入库的卡片不显示「无出入库」说明',
     card === null || card.idleText === null,
     String(card?.idleText)
   )
+
+  // ── 2d. 时间窗口平移（左右滑动） ──────────────────────────
+  section('2d. 报表页：时间窗口左右平移')
+  const rangeText = () => page.$eval('.report-range', (e) => e.textContent.trim())
+  const btnDisabled = (label) =>
+    page.evaluate((t) => {
+      const b = [...document.querySelectorAll('.range-btn')].find((x) => x.textContent.trim() === t)
+      return b ? b.disabled : null
+    }, label)
+  const clickBtn = async (label) => {
+    await page.evaluate((t) => {
+      const b = [...document.querySelectorAll('.range-btn')].find((x) => x.textContent.trim() === t)
+      if (b) b.click()
+    }, label)
+    await page.waitForTimeout(250)
+  }
+
+  check(
+    '默认区间是最近 12 个月',
+    (await rangeText()) === '统计区间：2025-10 ~ 2026-09',
+    await rangeText()
+  )
+  // 不能往未来滑 —— 右边到头了
+  check('「更晚」按钮默认禁用（不能滑向未来）', (await btnDisabled('更晚 ▶')) === true)
+  check('「更早」按钮默认可用（有更早的数据）', (await btnDisabled('◀ 更早')) === false)
+
+  await clickBtn('◀ 更早')
+  check(
+    '点一次「更早」，区间整体前移一个月',
+    (await rangeText()) === '统计区间：2025-09 ~ 2026-08',
+    await rangeText()
+  )
+  check('平移后「更晚」按钮变为可用', (await btnDisabled('更晚 ▶')) === false)
+  check('平移后出现「回到最新」', (await btnDisabled('回到最新')) === false)
+
+  // 一直往前滑到最早一条记录所在月（种子数据最早是 2025-10-14）
+  for (let i = 0; i < 20; i++) {
+    if ((await btnDisabled('◀ 更早')) === true) break
+    await clickBtn('◀ 更早')
+  }
+  // 可滑范围 = 最早记录所在月到当前月 = 2025-10 ~ 2026-09 共 11 步。
+  // 滑到头时窗口是 2024-11 ~ 2025-10，最早那条记录正好落在窗口末月
+  check(
+    '滑到最早数据处即停住（不会滑进全是空白的窗口）',
+    (await btnDisabled('◀ 更早')) === true && (await rangeText()) === '统计区间：2024-11 ~ 2025-10',
+    await rangeText()
+  )
+  // 停住之后图表里应该真的能看到最早那条数据 —— 否则「滑到位」是假的
+  const slid = await reportCard('M3×8 螺丝')
+  check(
+    '滑到最早处时 2025-10 入库 200 仍在窗口内',
+    barAt(slid, '2025-10', 'in')?.title === '2025-10 入库 200',
+    String(barAt(slid, '2025-10', 'in')?.title)
+  )
+  check(
+    '滑到最早处时 2026-09 已滑出窗口',
+    barAt(slid, '2026-09', 'in') === null,
+    String(barAt(slid, '2026-09', 'in'))
+  )
+
+  await clickBtn('回到最新')
+  check(
+    '「回到最新」把区间复位',
+    (await rangeText()) === '统计区间：2025-10 ~ 2026-09' && (await btnDisabled('更晚 ▶')) === true,
+    await rangeText()
+  )
+
+  // 拖动：往右拖应当看到更早的数据（和拖动地图的方向一致）
+  const gridBox = await page.$eval('.report-grid', (el) => {
+    const r = el.getBoundingClientRect()
+    return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 40) }
+  })
+  await page.mouse.move(gridBox.x, gridBox.y)
+  await page.mouse.down()
+  await page.mouse.move(gridBox.x + 130, gridBox.y, { steps: 8 })
+  await page.mouse.up()
+  await page.waitForTimeout(300)
+  check(
+    '往右拖动 130px ≈ 前移 2 个月',
+    (await rangeText()) === '统计区间：2025-08 ~ 2026-07',
+    await rangeText()
+  )
+  await clickBtn('回到最新')
 
   await shot(page, '2c-reports')
   await switchTab(page, '仓库')
@@ -701,25 +848,25 @@ async function run(page, shot) {
     '除末列外每列都有 1px 列分割线',
     cols.filter((c) => !c.isLast).every((c) => c.thBorderRight === 1 && c.tdBorderRight === 1)
   )
-  check('记录页共 17 条种子数据', (await rowCount(page)) === 17, `${await rowCount(page)}`)
+  check('记录页共 33 条种子数据', (await rowCount(page)) === 33, `${await rowCount(page)}`)
   await shot(page, '2-records')
 
   // ── 4. 名称 / 类型筛选 ───────────────────────────────────
   section('4. 名称与类型筛选')
   await setInput(page, '.search-input', '螺丝')
   await page.waitForTimeout(250)
-  check('搜「螺丝」→ 6 条', (await rowCount(page)) === 6, `${await rowCount(page)}`)
+  check('搜「螺丝」→ 11 条', (await rowCount(page)) === 11, `${await rowCount(page)}`)
   await setInput(page, '.search-input', '')
   await page.waitForTimeout(250)
 
-  // 种子 17 条的构成（先 grep 数过）：入库 11 条、出库 6 条
+  // 种子 33 条的构成（先 grep 数过）：入库 21 条、出库 12 条
   await page.evaluate(() => {
     ;[...document.querySelectorAll('.filter-group button')]
       .find((b) => b.textContent.trim() === '出库')
       .click()
   })
   await page.waitForTimeout(250)
-  check('筛「出库」→ 6 条', (await rowCount(page)) === 6, `${await rowCount(page)}`)
+  check('筛「出库」→ 12 条', (await rowCount(page)) === 12, `${await rowCount(page)}`)
   await page.evaluate(() => {
     ;[...document.querySelectorAll('.filter-group button')]
       .find((b) => b.textContent.trim() === '全部')
@@ -730,7 +877,8 @@ async function run(page, shot) {
   // ── 5. 时间范围（含当日） ────────────────────────────────
   // 种子数据的日期分布（先用 grep 数过，别凭印象）：
   //   09-19 六条（08:00 / 09:30 / 10:00 / 11:00 / 13:00 / 15:00）
-  //   09-18 一条、09-17 一条、08-20 一条；另有 6/7/8 月共 8 条，合计 17 条
+  //   09-18 一条、09-17 一条、08-20 一条；另有 6/7/8 月共 8 条，
+  //   再加上铺满 12 个月窗口时补的 2025-10 ~ 2026-05 共 16 条，合计 33 条
   section('5. 时间范围筛选（含当日）')
   const setRange = async (from, to) => {
     await setInput(page, 'input[aria-label="起始日期"]', from)
@@ -751,8 +899,8 @@ async function run(page, shot) {
     times.join(',')
   )
   check(
-    '标题显示「筛选出 6 / 共 17 条」',
-    (await countLabel(page)).includes('筛选出 6 / 共 17 条'),
+    '标题显示「筛选出 6 / 共 33 条」',
+    (await countLabel(page)).includes('筛选出 6 / 共 33 条'),
     await countLabel(page)
   )
   await shot(page, '3-date-single-day')
@@ -761,7 +909,7 @@ async function run(page, shot) {
   check('09-17 ~ 09-19 → 8 条', (await rowCount(page)) === 8, `${await rowCount(page)}`)
 
   await setRange('', '2026-09-18')
-  check('只填截止 09-18 → 11 条（该日及更早）', (await rowCount(page)) === 11, `${await rowCount(page)}`)
+  check('只填截止 09-18 → 27 条（该日及更早）', (await rowCount(page)) === 27, `${await rowCount(page)}`)
 
   await setRange('2026-08-20', '2026-08-20')
   check('单日 08-20 → 1 条（边界日当天命中）', (await rowCount(page)) === 1, `${await rowCount(page)}`)
@@ -795,7 +943,7 @@ async function run(page, shot) {
     to: document.querySelector('input[aria-label="截止日期"]').value
   }))
   check('「清除」按钮清空两端日期', cleared.from === '' && cleared.to === '', JSON.stringify(cleared))
-  check('清除后恢复 17 条', (await rowCount(page)) === 17, `${await rowCount(page)}`)
+  check('清除后恢复 33 条', (await rowCount(page)) === 33, `${await rowCount(page)}`)
 
   // ── 6. 操作页表单 ────────────────────────────────────────
   section('6. 操作页表单')
@@ -880,11 +1028,11 @@ async function run(page, shot) {
   check('入库 45 后铜线库存 -15 → 30（跨页自动刷新）', after?.['数量'] === '30', rowText(after))
 
   // ── 7. 撤销反向冲销 ──────────────────────────────────────
-  // 上一节提交了两笔（排针新建 + 铜线入库 45），所以 17 → 19
+  // 上一节提交了两笔（排针新建 + 铜线入库 45），所以 33 → 35
   section('7. 撤销记录（反向冲销）')
   await switchTab(page, '记录')
   await page.waitForTimeout(400)
-  check('记录数 17 → 19（上一节新增两笔）', (await rowCount(page)) === 19, `${await rowCount(page)}`)
+  check('记录数 33 → 35（上一节新增两笔）', (await rowCount(page)) === 35, `${await rowCount(page)}`)
   const firstRow = await page.evaluate(() => {
     const tr = document.querySelector('tbody tr')
     if (!tr) return null
@@ -911,7 +1059,7 @@ async function run(page, shot) {
   await page.waitForTimeout(800)
   check('弹出确认框', dialogs.some((d) => d.message.includes('确定撤销这条记录')), JSON.stringify(dialogs.at(-1) ?? {}))
   check('确认框写明了记录内容与操作人', dialogs.at(-1)?.message.includes('铜线 1.5mm²') === true, dialogs.at(-1)?.message.replace(/\s+/g, ' '))
-  check('记录数回到 18（只撤销掉那一条）', (await rowCount(page)) === 18, `${await rowCount(page)}`)
+  check('记录数回到 34（只撤销掉那一条）', (await rowCount(page)) === 34, `${await rowCount(page)}`)
   await switchTab(page, '仓库')
   await page.waitForTimeout(400)
   const undone = await warehouseRow(page, '铜线 1.5mm²')
@@ -966,6 +1114,35 @@ async function run(page, shot) {
   // ── 9. 控制台 ────────────────────────────────────────────
   section('9. 渲染进程控制台')
   check('无 console.error / pageerror', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
+
+  section('10. 构建产物：导出依赖（xlsx）确实在渲染 bundle 里')
+
+  /*
+   * 打包配置把 node_modules/xlsx 整个排除了（asar 从 7MB 降到约 1.1MB），
+   * 依据是「xlsx 由渲染进程 import，会被 Vite 打进 bundle，运行期不需要
+   * node_modules 里那一份」。这个前提一旦不成立，打包后的导出会**静默失效** ——
+   * 而导出走的是原生保存对话框，端到端自动化点不了，没有别的断言能兜住。
+   * 所以在这里把前提本身钉死：bundle 里必须有 xlsx，且不得 require 它。
+   */
+  const assetDir = join(ROOT, 'out', 'renderer', 'assets')
+  const bundleName = (await readdir(assetDir)).find((f) => f.endsWith('.js'))
+  const bundle = bundleName ? await readFile(join(assetDir, bundleName), 'utf8') : ''
+  check('找到渲染 bundle', bundle.length > 0, bundleName ?? 'assets 下没有 .js')
+  check(
+    'bundle 里带着 xlsx 编码器（SheetJS + xl/workbook 标记）',
+    bundle.includes('SheetJS') && bundle.includes('xl/workbook'),
+    `SheetJS=${bundle.includes('SheetJS')} xl/workbook=${bundle.includes('xl/workbook')}`
+  )
+  check(
+    'bundle 不 require("xlsx")（没有运行期回退到 node_modules）',
+    !bundle.includes('require("xlsx")') && !bundle.includes("require('xlsx')")
+  )
+  const bundleRequires = [...new Set(bundle.match(/require\("[^"]+"\)/g) ?? [])]
+  check(
+    'bundle 不引用任何外部模块（故 asar 里无需 node_modules）',
+    bundleRequires.length === 0,
+    bundleRequires.slice(0, 4).join(' ')
+  )
 }
 
 // ── 入口 ────────────────────────────────────────────────────

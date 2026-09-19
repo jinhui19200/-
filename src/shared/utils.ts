@@ -121,6 +121,19 @@ export function recentMonths(count: number, from: Date = new Date()): string[] {
 }
 
 /**
+ * 两个 `YYYY-MM` 之间相差的月数。`to` 晚于 `from` 时为正，早于时为负。
+ *
+ * 用「年×12 + 月」的差值算，而不是对 Date 做减法：
+ * Date 相减得到的是毫秒，各月天数不同，除以 30 天会算出 0.97 个月这种结果，
+ * 取整后边界月份会随机偏一格。
+ */
+export function monthDiff(from: string, to: string): number {
+  const [fy, fm] = from.split('-').map(Number)
+  const [ty, tm] = to.split('-').map(Number)
+  return (ty - fy) * 12 + (tm - fm)
+}
+
+/**
  * 某个物品在各月的入库/出库合计，顺序与传入的 months 完全一致。
  *
  * 返回定长数组（没有记录的月份补 0），这样界面直接按下标画柱、

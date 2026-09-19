@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDataFilePath, getLoadReport, getSnapshot, initStore, load } from '../src/main/store/db'
 import { applyTransaction, deleteRecord, setItemThreshold } from '../src/main/store/transactions'
-import { DEFAULT_THRESHOLD, monthLabel, monthlySeries, recentMonths } from '../src/shared/utils'
+import { DEFAULT_THRESHOLD, monthDiff, monthLabel, monthlySeries, recentMonths } from '../src/shared/utils'
 
 let passed = 0
 let failed = 0
@@ -368,6 +368,29 @@ async function main(): Promise<void> {
     monthLabel('2026-09') === '9月' && monthLabel('2026-01') === '1月',
     monthLabel('2026-09')
   )
+
+  section('19. 月份差（时间窗口平移用）')
+  check('同年', monthDiff('2026-01', '2026-09') === 8, `${monthDiff('2026-01', '2026-09')}`)
+  check('跨年', monthDiff('2025-10', '2026-09') === 11, `${monthDiff('2025-10', '2026-09')}`)
+  check('正好一年 = 12', monthDiff('2025-09', '2026-09') === 12, `${monthDiff('2025-09', '2026-09')}`)
+  check('跨年相邻月 = 1（不是 -11）', monthDiff('2025-12', '2026-01') === 1, `${monthDiff('2025-12', '2026-01')}`)
+  check('同月 = 0', monthDiff('2026-09', '2026-09') === 0, `${monthDiff('2026-09', '2026-09')}`)
+  check('反向为负（符号有意义）', monthDiff('2026-09', '2026-01') === -8, `${monthDiff('2026-09', '2026-01')}`)
+
+  // 把两个函数对起来：平移 offset 个月之后，窗口起点应当正好比锚点早 (WINDOW-1) 个月。
+  // 这条不通过就说明「滑动一个月」实际滑的不是一个月（跨年或月末借位出错）。
+  const WINDOW = 12
+  for (const off of [0, 1, 11, 12, 25]) {
+    const anchor = new Date(2026, 8 - off, 1)
+    const win = recentMonths(WINDOW, anchor)
+    const anchorKey = `${anchor.getFullYear()}-${String(anchor.getMonth() + 1).padStart(2, '0')}`
+    const span = monthDiff(win[0], win[win.length - 1])
+    check(
+      `窗口长度恒为 ${WINDOW} 个月（offset=${off}）`,
+      win.length === WINDOW && span === WINDOW - 1 && win[win.length - 1] === anchorKey,
+      `${win[0]} ~ ${win[win.length - 1]}，跨度 ${span}`
+    )
+  }
 
   await rm(dir, { recursive: true, force: true })
   await rm(legacyDir, { recursive: true, force: true })

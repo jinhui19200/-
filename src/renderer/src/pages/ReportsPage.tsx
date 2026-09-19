@@ -1,9 +1,20 @@
-import { useMemo } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { Item, StockRecord } from '@shared/types'
-import { formatQuantity, monthKey, monthLabel, monthlySeries, recentMonths } from '@shared/utils'
+import {
+  currentMonth,
+  formatQuantity,
+  monthDiff,
+  monthKey,
+  monthLabel,
+  monthlySeries,
+  recentMonths
+} from '@shared/utils'
 
-/** 报表窗口：最近几个自然月 */
-const WINDOW_MONTHS = 6
+/** 报表窗口：一次显示几个自然月 */
+const WINDOW_MONTHS = 12
+
+/** 拖动多少个像素算移动一个月。太小会抖，太大拖不动 */
+const PX_PER_MONTH = 60
 
 interface Props {
   items: Item[]
@@ -20,23 +31,87 @@ interface Props {
  *
  * 上下两半**共用同一刻度**（取所有月份里的最大值）。若各自按自己的最大值缩放，
  * 一个入库 10、出库 1000 的物品会画成两根一样长的柱子，是错的。
+ *
+ * 时间窗口可以整体前后平移（箭头按钮或直接拖动图表）。
+ * 平移的是**所有卡片共用的同一个窗口** —— 各卡片各滑各的就没法横向对比了。
  */
 export function ReportsPage({ items, records }: Props): React.JSX.Element {
-  const months = useMemo(() => recentMonths(WINDOW_MONTHS), [])
+  /** 窗口相对「最近 N 个月」往前推了几个月。0 = 贴着当前月 */
+  const [offset, setOffset] = useState(0)
+
+  /**
+   * 最多能往前推多少个月：推到「最早一条记录所在月」为止。
+   * 再往前全是空窗口，没有信息量。没有任何记录时不能平移。
+   */
+  const maxOffset = useMemo(() => {
+    if (records.length === 0) return 0
+    const earliest = records.reduce((min, r) => {
+      const m = monthKey(r.time)
+      return m < min ? m : min
+    }, monthKey(records[0].time))
+    return Math.max(0, monthDiff(earliest, currentMonth()))
+  }, [records])
+
+  /**
+   * 用钳制后的值参与渲染，而不是把 offset 存回 state。
+   * 记录变少（撤销、清空）会让 maxOffset 缩水，用派生值就不需要 effect 去纠正，
+   * 也不会出现「state 是 5、界面显示 2」这种不一致。
+   */
+  const safeOffset = Math.min(offset, maxOffset)
+  const clampOffset = (v: number): number => Math.max(0, Math.min(maxOffset, v))
+
+  const months = useMemo(() => {
+    const now = new Date()
+    // 锚点固定为 1 号：避免「31 号往前推一个月」落到不存在的日期上
+    const anchor = new Date(now.getFullYear(), now.getMonth() - safeOffset, 1)
+    return recentMonths(WINDOW_MONTHS, anchor)
+  }, [safeOffset])
 
   const charts = useMemo(
     () => items.map((item) => ({ item, series: monthlySeries(records, item.id, months) })),
     [items, records, months]
   )
 
-  // 窗口之外还有历史数据的话要明确说出来，否则用户会以为数据丢了
-  const hiddenMonthCount = useMemo(() => {
-    const earliest = months[0]
-    const older = new Set(
-      records.map((r) => monthKey(r.time)).filter((m) => m < earliest)
+  // 窗口之外还有记录的月份数要明确说出来，否则用户会以为数据丢了。
+  // 两侧都算：往前滑之后，右侧（更新的月份）同样会落在窗口外。
+  const outsideCount = useMemo(() => {
+    const first = months[0]
+    const last = months[months.length - 1]
+    const outside = new Set(
+      records.map((r) => monthKey(r.time)).filter((m) => m < first || m > last)
     )
-    return older.size
+    return outside.size
   }, [records, months])
+
+  // ── 拖动平移 ──
+  const dragRef = useRef<{ startX: number; startOffset: number } | null>(null)
+  const [dragging, setDragging] = useState(false)
+
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (e.button !== 0) return
+    dragRef.current = { startX: e.clientX, startOffset: safeOffset }
+    setDragging(true)
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>): void => {
+    const d = dragRef.current
+    if (!d) return
+    // 往右拖 = 把时间轴往右拉 = 看到更早的数据（和拖动地图的方向一致）
+    const delta = Math.round((e.clientX - d.startX) / PX_PER_MONTH)
+    if (delta !== 0) setOffset(clampOffset(d.startOffset + delta))
+  }
+
+  const endDrag = (e: React.PointerEvent<HTMLDivElement>): void => {
+    if (!dragRef.current) return
+    dragRef.current = null
+    setDragging(false)
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId)
+    } catch {
+      /* 指针已经释放过了，忽略 */
+    }
+  }
 
   if (items.length === 0) {
     return (
@@ -60,15 +135,51 @@ export function ReportsPage({ items, records }: Props): React.JSX.Element {
           <i className="swatch swatch-out" />
           出库（轴下方）
         </span>
-        <span className="report-range">
-          统计区间：{months[0]} ~ {months[months.length - 1]}
-        </span>
-        {hiddenMonthCount > 0 && (
-          <span className="report-note">另有 {hiddenMonthCount} 个月的更早数据未显示</span>
+        <span className="report-hint">按住图表左右拖动可调整时间</span>
+        {outsideCount > 0 && (
+          <span className="report-note">窗口外还有 {outsideCount} 个月的记录</span>
         )}
       </div>
 
-      <div className="report-grid">
+      <div className="report-toolbar">
+        <button
+          type="button"
+          className="range-btn"
+          onClick={() => setOffset(clampOffset(safeOffset + 1))}
+          disabled={safeOffset >= maxOffset}
+          title="往前看一个月"
+        >
+          ◀ 更早
+        </button>
+
+        <span className="report-range">
+          统计区间：{months[0]} ~ {months[months.length - 1]}
+        </span>
+
+        <button
+          type="button"
+          className="range-btn"
+          onClick={() => setOffset(clampOffset(safeOffset - 1))}
+          disabled={safeOffset === 0}
+          title="往后看一个月"
+        >
+          更晚 ▶
+        </button>
+
+        {safeOffset > 0 && (
+          <button type="button" className="range-btn range-btn-reset" onClick={() => setOffset(0)}>
+            回到最新
+          </button>
+        )}
+      </div>
+
+      <div
+        className={`report-grid${dragging ? ' dragging' : ''}`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
         {charts.map(({ item, series }) => (
           <ItemChart key={item.id} item={item} months={months} series={series} />
         ))}
@@ -126,7 +237,7 @@ function ItemChart({ item, months, series }: ChartProps): React.JSX.Element {
                 style={{ height: pct(r.in), minHeight: stub(r.in) }}
                 title={`${r.month} 入库 ${formatQuantity(r.in)}`}
               >
-                {/* 值为 0 不标：6 个月 × 上下两半，满屏的「0」比没有标注更难看 */}
+                {/* 值为 0 不标：12 个月 × 上下两半，满屏的「0」比没有标注更难看 */}
                 {r.in > 0 && <span className="plot-value value-in">{formatQuantity(r.in)}</span>}
               </div>
             </div>
