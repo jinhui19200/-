@@ -46,14 +46,14 @@ export function TransactionForm({
       .slice(0, 6)
   }, [items, name, matchedItem])
 
-  // 操作人自动补全建议（去重，只取最近用过的）
+  // 操作人自动补全建议（去重，只取最近用过的；排除与已输入完全相同的项）
   const operatorSuggestions = useMemo(() => {
     const term = operator.trim()
     if (!term) return []
     const seen = new Set<string>()
     const list: string[] = []
     for (const r of records) {
-      if (r.operator && r.operator.includes(term) && !seen.has(r.operator)) {
+      if (r.operator && r.operator.includes(term) && r.operator !== term && !seen.has(r.operator)) {
         seen.add(r.operator)
         list.push(r.operator)
         if (list.length >= 6) break

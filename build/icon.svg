@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b9bf8"/>
+      <stop offset="0.55" stop-color="#2f6fe4"/>
+      <stop offset="1" stop-color="#1a44b8"/>
+    </linearGradient>
+    <linearGradient id="faceL" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eaf1ff"/>
+      <stop offset="1" stop-color="#d3e1fb"/>
+    </linearGradient>
+    <linearGradient id="faceR" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c6daf8"/>
+      <stop offset="1" stop-color="#a9c5f0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 圆角方形底 -->
+  <rect x="72" y="72" width="880" height="880" rx="200" fill="url(#bg)"/>
+  <rect x="72" y="72" width="880" height="400" rx="200" fill="#ffffff" opacity="0.08"/>
+
+  <!-- 箱底投影（等距底面，略放大） -->
+  <path d="M512 507 L852 679 L512 851 L172 679 Z" fill="#0d2c6e" opacity="0.16"/>
+
+  <!-- 顶面 -->
+  <path d="M512 199 L833 361 L512 522 L191 361 Z" fill="#ffffff"/>
+  <!-- 左侧面（受光） -->
+  <path d="M191 361 L512 522 L512 841 L191 679 Z" fill="url(#faceL)"/>
+  <!-- 右侧面（背光） -->
+  <path d="M833 361 L512 522 L512 841 L833 679 Z" fill="url(#faceR)"/>
+
+  <!-- 封箱胶带：连接「后左棱」与「前右棱」的中点，两端裁到棱边 -->
+  <path d="M324 294 L644 456 L701 428 L380 266 Z" fill="#c3d7f5" stroke="#a8c4ee" stroke-width="3" stroke-linejoin="round"/>
+
+  <!-- 箱体棱线 -->
+  <g stroke="#8aabdf" stroke-width="7" stroke-linejoin="round" stroke-linecap="round" fill="none" opacity="0.85">
+    <path d="M191 361 L512 199 L833 361"/>
+    <path d="M512 199 L512 522"/>
+    <path d="M191 361 L512 522 L833 361"/>
+    <path d="M191 361 L191 679 L512 841 L833 679 L833 361"/>
+  </g>
+
+  <!-- 右面运单标签 -->
+  <path d="M624 580 L762 511 L762 575 L624 644 Z" fill="#ffffff" opacity="0.7"/>
+  <g stroke="#8aabdf" stroke-width="6" stroke-linecap="round" opacity="0.75">
+    <path d="M647 587 L743 538"/>
+    <path d="M647 603 L743 554"/>
+    <path d="M647 619 L705 590"/>
+  </g>
+</svg>

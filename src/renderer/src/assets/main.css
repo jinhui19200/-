@@ -316,6 +316,9 @@ body {
   background: var(--surface);
   outline: none;
   transition: border-color 0.15s;
+  /* 名称/操作人外面套了一层定位容器，不显式撑满会比其它字段窄 */
+  width: 100%;
+  min-width: 0;
 }
 
 .tx-field input:focus {
