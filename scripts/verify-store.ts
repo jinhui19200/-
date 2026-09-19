@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDataFilePath, getLoadReport, getSnapshot, initStore, load } from '../src/main/store/db'
 import { applyTransaction, deleteRecord, setItemThreshold } from '../src/main/store/transactions'
-import { DEFAULT_THRESHOLD } from '../src/shared/utils'
+import { DEFAULT_THRESHOLD, monthLabel, monthlySeries, recentMonths } from '../src/shared/utils'
 
 let passed = 0
 let failed = 0
@@ -316,6 +316,57 @@ async function main(): Promise<void> {
   check(
     '重新加载后警戒值仍为 100（上一轮非法输入的结果）',
     getSnapshot().items.find((i) => i.id === first.id)?.threshold === DEFAULT_THRESHOLD
+  )
+
+  // ── 18. 报表用的月度序列 ─────────────────────────────────
+  section('18. 月度序列（报表页的数据源）')
+
+  // 跨年是最容易写错的地方：自己算 `m - i` 会得到负数或 0 月
+  const crossYear = recentMonths(6, new Date(2026, 1, 15)) // 2026-02-15
+  check(
+    '跨年回推 6 个月得到 2025-09 ~ 2026-02',
+    crossYear.join(',') === '2025-09,2025-10,2025-11,2025-12,2026-01,2026-02',
+    crossYear.join(',')
+  )
+
+  // 日期固定为 1 号，否则 3-31 回推会落到不存在的「2 月 31 日」
+  const from31 = recentMonths(3, new Date(2026, 2, 31)) // 2026-03-31
+  check(
+    '从 31 号回推不会跳到不存在的日期',
+    from31.join(',') === '2026-01,2026-02,2026-03',
+    from31.join(',')
+  )
+
+  const months = recentMonths(3, new Date(2026, 8, 19)) // 2026-07 ~ 2026-09
+  check('序列从早到晚，最后一项是当月', months[months.length - 1] === '2026-09', months.join(','))
+
+  const series = monthlySeries(
+    [
+      { itemId: 'a', time: '2026-09-01T10:00', quantity: 100, type: 'in' },
+      { itemId: 'a', time: '2026-09-20T10:00', quantity: 50, type: 'in' },
+      { itemId: 'a', time: '2026-09-21T10:00', quantity: 30, type: 'out' },
+      { itemId: 'a', time: '2026-08-05T10:00', quantity: 7, type: 'out' },
+      { itemId: 'b', time: '2026-09-02T10:00', quantity: 999, type: 'in' },
+      { itemId: 'a', time: '2020-01-01T10:00', quantity: 888, type: 'in' } // 落在窗口之外
+    ],
+    'a',
+    months
+  )
+  check('返回定长数组，与传入月份一一对应', series.length === 3, `${series.length}`)
+  check('同月多笔入库累加（100+50）', series[2].in === 150, `${series[2].in}`)
+  check('同月出库单独统计', series[2].out === 30, `${series[2].out}`)
+  check('其它月份的记录记在对应位置（8 月出库 7）', series[1].out === 7, `${series[1].out}`)
+  check(
+    '没有记录的月份补 0 而不是缺项',
+    series[0].in === 0 && series[0].out === 0,
+    JSON.stringify(series[0])
+  )
+  check('只统计指定物品（b 的 999 不计入）', series[2].in === 150, `${series[2].in}`)
+  check('窗口之外的历史记录被忽略', series.every((r) => r.in !== 888), JSON.stringify(series))
+  check(
+    '月份短标签（9月 / 1月）',
+    monthLabel('2026-09') === '9月' && monthLabel('2026-01') === '1月',
+    monthLabel('2026-09')
   )
 
   await rm(dir, { recursive: true, force: true })

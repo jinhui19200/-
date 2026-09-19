@@ -2,13 +2,16 @@ import { useEffect, useState } from 'react'
 import { useAppData } from './hooks/useAppData'
 import { OperationPage } from './pages/OperationPage'
 import { RecordsPage } from './pages/RecordsPage'
+import { ReportsPage } from './pages/ReportsPage'
 import { WarehousePage } from './pages/WarehousePage'
 
-type TabKey = 'warehouse' | 'records' | 'operation'
+type TabKey = 'warehouse' | 'records' | 'reports' | 'operation'
 
+// 报表放在「操作」之前：操作是录入口，习惯上留在最右边
 const TABS: { key: TabKey; label: string }[] = [
   { key: 'warehouse', label: '仓库' },
   { key: 'records', label: '记录' },
+  { key: 'reports', label: '报表' },
   { key: 'operation', label: '操作' }
 ]
 
@@ -104,6 +107,7 @@ export default function App() {
             exportXlsx={exportXlsx}
           />
         )}
+        {ready && tab === 'reports' && <ReportsPage items={db.items} records={db.records} />}
         {ready && tab === 'operation' && (
           <OperationPage
             items={db.items}

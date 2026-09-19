@@ -96,3 +96,49 @@ export function computeMonthlyTotals(
   }
   return map
 }
+
+/** 月份标识 `YYYY-MM` 的中文短标签，如 `2026-09` → `9月` */
+export function monthLabel(month: string): string {
+  return `${Number(month.slice(5))}月`
+}
+
+/**
+ * 最近 count 个自然月，**从早到晚**排列（最后一项是当月）。
+ *
+ * 用 `new Date(y, m - i, 1)` 逐月回推而不是自己算减法：
+ * 月份为负数时 Date 会自动向年份借位，跨年边界不用特判。
+ * 同时把日期固定为 1 号，避免「31 号往前推一个月」落到不存在的日期上。
+ */
+export function recentMonths(count: number, from: Date = new Date()): string[] {
+  const out: string[] = []
+  const y = from.getFullYear()
+  const m = from.getMonth()
+  for (let i = count - 1; i >= 0; i--) {
+    const d = new Date(y, m - i, 1)
+    out.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`)
+  }
+  return out
+}
+
+/**
+ * 某个物品在各月的入库/出库合计，顺序与传入的 months 完全一致。
+ *
+ * 返回定长数组（没有记录的月份补 0），这样界面直接按下标画柱、
+ * 不必再判断某个月缺不缺数据。
+ */
+export function monthlySeries(
+  records: Array<{ itemId: string; time: string; quantity: number; type: 'in' | 'out' }>,
+  itemId: string,
+  months: string[]
+): Array<{ month: string; in: number; out: number }> {
+  const index = new Map(months.map((m, i) => [m, i]))
+  const rows = months.map((month) => ({ month, in: 0, out: 0 }))
+
+  for (const r of records) {
+    if (r.itemId !== itemId) continue
+    const i = index.get(monthKey(r.time))
+    if (i === undefined) continue // 落在窗口之外的历史记录，忽略
+    rows[i][r.type] = roundQuantity(rows[i][r.type] + r.quantity)
+  }
+  return rows
+}

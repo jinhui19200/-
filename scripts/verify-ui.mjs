@@ -243,7 +243,7 @@ async function run(page, shot) {
   const tabs = await page.evaluate(() =>
     [...document.querySelectorAll('button.tab')].map((b) => b.textContent.trim())
   )
-  check('三个页签：仓库 / 记录 / 操作', tabs.join('|') === '仓库|记录|操作', tabs.join('|'))
+  check('四个页签：仓库 / 记录 / 报表 / 操作', tabs.join('|') === '仓库|记录|报表|操作', tabs.join('|'))
   check('仓库页默认渲染 5 种物品', (await rowCount(page)) === 5, `${await rowCount(page)}`)
   const overflow = await page.evaluate(() => {
     const el = document.querySelector('.content')
@@ -436,7 +436,7 @@ async function run(page, shot) {
     const snap = await window.api.getSnapshot()
     return snap.records.length
   })
-  check('改警戒值没有写进出库记录', recordsAfterThreshold === 9, `${recordsAfterThreshold}`)
+  check('改警戒值没有写进出库记录', recordsAfterThreshold === 17, `${recordsAfterThreshold}`)
 
   // 数据层确实存下了新警戒值（不是只改了界面）
   const persisted = await page.evaluate(async () => {
@@ -448,6 +448,105 @@ async function run(page, shot) {
     persisted.includes('M3×8 螺丝:100') && persisted.includes('铜线 1.5mm²:50'),
     persisted
   )
+
+  // ── 2c. 报表页：双向柱状图 ───────────────────────────────
+  section('2c. 报表页：入库在上 / 出库在下')
+  await switchTab(page, '报表')
+  await page.waitForTimeout(400)
+
+  /** 某物品卡片的图表几何。柱高只量高度，位置用来判断在零轴哪一侧 */
+  const reportCard = (name) =>
+    page.evaluate((n) => {
+      const card = [...document.querySelectorAll('.report-card')].find(
+        (c) => c.querySelector('.report-name')?.textContent?.trim() === n
+      )
+      if (!card) return null
+      const box = (el) => {
+        const r = el.getBoundingClientRect()
+        return {
+          top: Math.round(r.top),
+          bottom: Math.round(r.bottom),
+          h: Math.round(r.height)
+        }
+      }
+      const readBars = (sel) =>
+        [...card.querySelectorAll(sel)].map((b) => ({ ...box(b), title: b.getAttribute('title') }))
+      return {
+        labels: [...card.querySelectorAll('.plot-label')].map((e) => e.textContent.trim()),
+        // 两个刻度列各自的两个标签：[上半: 最大值, 0] / [下半: 0, 最大值]
+        gutters: [...card.querySelectorAll('.plot-gutter')].map((g) =>
+          [...g.querySelectorAll('span')].map((s) => s.textContent.trim())
+        ),
+        axis: box(card.querySelector('.plot-axis')),
+        barsIn: readBars('.plot-in .plot-bar'),
+        barsOut: readBars('.plot-out .plot-bar')
+      }
+    }, name)
+
+  const cardCount = await page.evaluate(() => document.querySelectorAll('.report-card').length)
+  check('仓库里每个物品一张卡片（5 个物品 → 5 张）', cardCount === 5, `${cardCount}`)
+
+  const card = await reportCard('M3×8 螺丝')
+  check('找到「M3×8 螺丝」的图表', card !== null)
+
+  if (card) {
+    check(
+      '横轴是最近 6 个自然月',
+      card.labels.join('|') === '4月|5月|6月|7月|8月|9月',
+      card.labels.join('|')
+    )
+
+    // 上下两半若各自按自己的最大值缩放，柱子长度就不可比了 —— 必须共用同一刻度
+    check(
+      '上下两半共用同一刻度（最大值 300）',
+      card.gutters[0][0] === '300' && card.gutters[1][1] === '300',
+      JSON.stringify(card.gutters)
+    )
+
+    const inAbove = card.barsIn.filter((b) => b.h > 0).every((b) => b.bottom <= card.axis.top + 1)
+    const outBelow = card.barsOut.filter((b) => b.h > 0).every((b) => b.top >= card.axis.bottom - 1)
+    check('入库柱全部在零轴上方', inAbove, JSON.stringify(card.barsIn.map((b) => [b.h, b.bottom])))
+    check('出库柱全部在零轴下方', outBelow, JSON.stringify(card.barsOut.map((b) => [b.h, b.top])))
+
+    // 数值取自 title：顺带验证「按物品 + 按月聚合」算对了
+    check('6 月入库 300', card.barsIn[2].title === '2026-06 入库 300', card.barsIn[2].title)
+    check('7 月出库 150', card.barsOut[3].title === '2026-07 出库 150', card.barsOut[3].title)
+    check('9 月入库 150（同月两笔 100+50 合并）', card.barsIn[5].title === '2026-09 入库 150', card.barsIn[5].title)
+    check('9 月出库 20', card.barsOut[5].title === '2026-09 出库 20', card.barsOut[5].title)
+    check(
+      '没有数据的月份柱高为 0（不是留空不画）',
+      card.barsIn[0].h === 0 && card.barsOut[0].h === 0,
+      `${card.barsIn[0].h}/${card.barsOut[0].h}`
+    )
+
+    // 柱高与数值成比例：300 的柱应约为 150 的两倍（各留 3px 舍入误差）
+    const h300 = card.barsIn[2].h
+    const h150 = card.barsIn[5].h
+    check(
+      '柱高与数值成比例（300 的柱 ≈ 150 的两倍）',
+      Math.abs(h300 - 2 * h150) <= 3,
+      `300→${h300}px，150→${h150}px`
+    )
+
+    const totals = await page.evaluate(() => {
+      const c = [...document.querySelectorAll('.report-card')].find(
+        (x) => x.querySelector('.report-name')?.textContent?.trim() === 'M3×8 螺丝'
+      )
+      if (!c) return null
+      // 两个 <b> 之间没有空白节点，整块 textContent 会粘成「入 455出 170」，
+      // 分别取元素比按整串比更稳
+      return [...c.querySelectorAll('.report-total b')].map((b) => b.textContent.trim())
+    })
+    check(
+      '卡片头部合计 = 入 455 / 出 170',
+      totals?.join(' | ') === '入 455 | 出 170',
+      JSON.stringify(totals)
+    )
+  }
+
+  await shot(page, '2c-reports')
+  await switchTab(page, '仓库')
+  await page.waitForTimeout(300)
 
   // ── 3. 记录页布局 ────────────────────────────────────────
   section('3. 记录页：表头与数据一一对应')
@@ -471,25 +570,25 @@ async function run(page, shot) {
     '除末列外每列都有 1px 列分割线',
     cols.filter((c) => !c.isLast).every((c) => c.thBorderRight === 1 && c.tdBorderRight === 1)
   )
-  check('记录页共 9 条种子数据', (await rowCount(page)) === 9, `${await rowCount(page)}`)
+  check('记录页共 17 条种子数据', (await rowCount(page)) === 17, `${await rowCount(page)}`)
   await shot(page, '2-records')
 
   // ── 4. 名称 / 类型筛选 ───────────────────────────────────
   section('4. 名称与类型筛选')
   await setInput(page, '.search-input', '螺丝')
   await page.waitForTimeout(250)
-  check('搜「螺丝」→ 4 条', (await rowCount(page)) === 4, `${await rowCount(page)}`)
+  check('搜「螺丝」→ 6 条', (await rowCount(page)) === 6, `${await rowCount(page)}`)
   await setInput(page, '.search-input', '')
   await page.waitForTimeout(250)
 
-  // 种子 9 条的构成（先 grep 数过）：入库 6 条、出库 3 条
+  // 种子 17 条的构成（先 grep 数过）：入库 11 条、出库 6 条
   await page.evaluate(() => {
     ;[...document.querySelectorAll('.filter-group button')]
       .find((b) => b.textContent.trim() === '出库')
       .click()
   })
   await page.waitForTimeout(250)
-  check('筛「出库」→ 3 条', (await rowCount(page)) === 3, `${await rowCount(page)}`)
+  check('筛「出库」→ 6 条', (await rowCount(page)) === 6, `${await rowCount(page)}`)
   await page.evaluate(() => {
     ;[...document.querySelectorAll('.filter-group button')]
       .find((b) => b.textContent.trim() === '全部')
@@ -500,7 +599,7 @@ async function run(page, shot) {
   // ── 5. 时间范围（含当日） ────────────────────────────────
   // 种子数据的日期分布（先用 grep 数过，别凭印象）：
   //   09-19 六条（08:00 / 09:30 / 10:00 / 11:00 / 13:00 / 15:00）
-  //   09-18 一条、09-17 一条、08-20 一条，共 9 条
+  //   09-18 一条、09-17 一条、08-20 一条；另有 6/7/8 月共 8 条，合计 17 条
   section('5. 时间范围筛选（含当日）')
   const setRange = async (from, to) => {
     await setInput(page, 'input[aria-label="起始日期"]', from)
@@ -521,8 +620,8 @@ async function run(page, shot) {
     times.join(',')
   )
   check(
-    '标题显示「筛选出 6 / 共 9 条」',
-    (await countLabel(page)).includes('筛选出 6 / 共 9 条'),
+    '标题显示「筛选出 6 / 共 17 条」',
+    (await countLabel(page)).includes('筛选出 6 / 共 17 条'),
     await countLabel(page)
   )
   await shot(page, '3-date-single-day')
@@ -531,7 +630,7 @@ async function run(page, shot) {
   check('09-17 ~ 09-19 → 8 条', (await rowCount(page)) === 8, `${await rowCount(page)}`)
 
   await setRange('', '2026-09-18')
-  check('只填截止 09-18 → 3 条（该日及更早）', (await rowCount(page)) === 3, `${await rowCount(page)}`)
+  check('只填截止 09-18 → 11 条（该日及更早）', (await rowCount(page)) === 11, `${await rowCount(page)}`)
 
   await setRange('2026-08-20', '2026-08-20')
   check('单日 08-20 → 1 条（边界日当天命中）', (await rowCount(page)) === 1, `${await rowCount(page)}`)
@@ -565,7 +664,7 @@ async function run(page, shot) {
     to: document.querySelector('input[aria-label="截止日期"]').value
   }))
   check('「清除」按钮清空两端日期', cleared.from === '' && cleared.to === '', JSON.stringify(cleared))
-  check('清除后恢复 9 条', (await rowCount(page)) === 9, `${await rowCount(page)}`)
+  check('清除后恢复 17 条', (await rowCount(page)) === 17, `${await rowCount(page)}`)
 
   // ── 6. 操作页表单 ────────────────────────────────────────
   section('6. 操作页表单')
@@ -650,11 +749,11 @@ async function run(page, shot) {
   check('入库 45 后铜线库存 -15 → 30（跨页自动刷新）', after?.['数量'] === '30', rowText(after))
 
   // ── 7. 撤销反向冲销 ──────────────────────────────────────
-  // 上一节提交了两笔（排针新建 + 铜线入库 45），所以 9 → 11
+  // 上一节提交了两笔（排针新建 + 铜线入库 45），所以 17 → 19
   section('7. 撤销记录（反向冲销）')
   await switchTab(page, '记录')
   await page.waitForTimeout(400)
-  check('记录数 9 → 11（上一节新增两笔）', (await rowCount(page)) === 11, `${await rowCount(page)}`)
+  check('记录数 17 → 19（上一节新增两笔）', (await rowCount(page)) === 19, `${await rowCount(page)}`)
   const firstRow = await page.evaluate(() => {
     const tr = document.querySelector('tbody tr')
     if (!tr) return null
@@ -681,7 +780,7 @@ async function run(page, shot) {
   await page.waitForTimeout(800)
   check('弹出确认框', dialogs.some((d) => d.message.includes('确定撤销这条记录')), JSON.stringify(dialogs.at(-1) ?? {}))
   check('确认框写明了记录内容与操作人', dialogs.at(-1)?.message.includes('铜线 1.5mm²') === true, dialogs.at(-1)?.message.replace(/\s+/g, ' '))
-  check('记录数回到 10（只撤销掉那一条）', (await rowCount(page)) === 10, `${await rowCount(page)}`)
+  check('记录数回到 18（只撤销掉那一条）', (await rowCount(page)) === 18, `${await rowCount(page)}`)
   await switchTab(page, '仓库')
   await page.waitForTimeout(400)
   const undone = await warehouseRow(page, '铜线 1.5mm²')

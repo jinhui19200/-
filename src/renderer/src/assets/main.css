@@ -647,3 +647,230 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ===== 报表页：每个物品一张双向柱状图 ===== */
+.report-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px;
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.swatch-in {
+  background: var(--in-fg);
+}
+
+.swatch-out {
+  background: var(--out-fg);
+}
+
+.report-range {
+  font-variant-numeric: tabular-nums;
+}
+
+.report-note {
+  color: var(--warn-fg);
+}
+
+.report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+}
+
+.report-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px 10px;
+  background: var(--surface);
+}
+
+.report-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.report-name {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.report-unit {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.report-total {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.report-total .t-in {
+  color: var(--in-fg);
+}
+
+.report-total .t-out {
+  color: var(--out-fg);
+}
+
+/*
+ * 图表用 CSS Grid 而不是 SVG：
+ * 卡片宽度随窗口变化，SVG 用固定 viewBox 会让文字跟着一起缩放 ——
+ * 宽窗口字太大、窄窗口字太小。用 Grid + flex 则天然自适应。
+ *
+ * 行结构：入库区 / 零轴 / 出库区 / 月份标签，
+ * 左右两列是刻度与绘图区，刻度按行对齐，不用手工算偏移。
+ */
+.report-plot {
+  display: grid;
+  grid-template-columns: 3.2em 1fr;
+  grid-template-rows: 92px 1px 92px auto;
+}
+
+.plot-gutter-in {
+  grid-area: 1 / 1;
+}
+
+.plot-in {
+  grid-area: 1 / 2;
+}
+
+.plot-axis {
+  grid-area: 2 / 2;
+}
+
+.plot-gutter-out {
+  grid-area: 3 / 1;
+}
+
+.plot-out {
+  grid-area: 3 / 2;
+}
+
+.plot-labels {
+  grid-area: 4 / 2;
+}
+
+/* 刻度：上半是「最大值在上、0 在下」，下半反过来，两侧都贴着零轴 */
+.plot-gutter {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding-right: 6px;
+  text-align: right;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 上半只剩一个「最大值」标签，靠 space-between 自然贴在顶部；
+   下半是「0 + 最大值」，0 紧贴零轴 */
+.plot-gutter-out {
+  padding-top: 2px;
+}
+
+.plot-axis {
+  background: #c3c9d2;
+}
+
+.plot-half {
+  display: flex;
+  position: relative;
+}
+
+/* 入库柱从零轴往上长，出库柱从零轴往下长 */
+.plot-in {
+  align-items: flex-end;
+}
+
+.plot-out {
+  align-items: flex-start;
+}
+
+/* 半程虚线，方便估读；压在柱子下面 */
+.plot-half::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 0;
+  border-top: 1px dashed var(--border-soft);
+  z-index: 0;
+}
+
+.plot-col {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  justify-content: center;
+}
+
+.plot-in .plot-col {
+  align-items: flex-end;
+}
+
+.plot-out .plot-col {
+  align-items: flex-start;
+}
+
+.plot-bar {
+  width: 56%;
+  max-width: 34px;
+  position: relative;
+  z-index: 1;
+}
+
+.bar-in {
+  background: var(--in-fg);
+  border-radius: 3px 3px 0 0;
+}
+
+.bar-out {
+  background: var(--out-fg);
+  border-radius: 0 0 3px 3px;
+}
+
+.plot-labels {
+  display: flex;
+  padding-top: 6px;
+}
+
+.plot-label {
+  flex: 1 1 0;
+  min-width: 0;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 720px) {
+  .report-grid {
+    grid-template-columns: 1fr;
+  }
+}
