@@ -1,47 +1,35 @@
-# GitHub Actions 工作流 —— 待安装
+# ──────────────────────────────────────────────────────────────────────
+#  安装说明（这段不要粘贴 —— 粘贴请从下面的 `name: Build` 开始）
 #
-# 这个文件**就是要装进 .github/workflows/build.yml 的全部内容**，
-# 从 `name:` 往下原样复制即可（上面这些注释也是 YAML 注释，一起复制没问题）。
+#  ⚠️ 推送 `.github/workflows/` 下的文件，需要 token 具备 `workflow` scope。
+#     本机凭据实测只有 `gist, read:org, repo`，缺这一项，GitHub 会**直接拒收整个 push**。
+#     所以这个文件当前待在 ci/ 下，两条安装路径：
 #
-# 为什么它现在待在 ci/ 而不是 .github/workflows/：
-#   推送 `.github/workflows/` 下的文件需要 token 具备 `workflow` scope。
-#   本机钥匙串里那个凭据实测只有 `gist, read:org, repo`（x-oauth-scopes 头），
-#   缺 `workflow`，GitHub 会直接拒收整个 push。
-#   ⇒ 没拿到 scope 之前，千万别把它 commit 进 .github/workflows/，
-#     否则之后每一次 git push 都会失败。
+#    A. 网页（推荐：不碰凭据，一分钟）
+#       打开 https://github.com/jinhui19200/-/new/main?filename=.github/workflows/build.yml
+#       把 `name: Build` 往下全部内容粘进去，提交。
 #
-# 安装方式（二选一）：
-#
-#   A. 网页上装（推荐：不碰凭据，一分钟）
-#      1. 打开
-#         https://github.com/jinhui19200/-/new/main?filename=.github/workflows/build.yml
-#      2. 把本文件全部内容粘进去
-#      3. 提交
-#
-#   B. 给凭据补权限后从命令行装
-#      1. 终端执行（gh 装着但不在 PATH 上，用全路径）：
+#    B. 补 scope 后从命令行装
+#       gh 装着但不在 PATH 上，用全路径：
 #         GH="/Users/hui/Documents/New project/.tools/gh/gh_2.94.0_macOS_arm64/bin/gh"
 #         "$GH" auth refresh -s workflow
-#         （沙箱里做不了这一步：gh 写 macOS 钥匙串会被拒，实测过 6 种绕法全失败）
-#      2. mkdir -p .github/workflows
+#         mkdir -p .github/workflows
 #         git mv ci/github-actions-build.yml .github/workflows/build.yml
 #         git commit -m "装 CI 工作流" && git push
 #
-# 触发方式：
-#   推 tag 即打包，例如  git tag v1.2.1 && git push origin v1.2.1
-#   打包产物在 Actions 页面该次运行的 Artifacts 里下载。
+#  装好之后两处内容应保持一致，改一处记得同步另一处。
 #
-# 说明：macOS 与 Windows 的安装包都未做代码签名，
-#   用户在系统里首次打开会被拦截（macOS 需在「隐私与安全性」里放行，
-#   Windows 需在 SmartScreen 提示里选「仍要运行」）。
-#
-# 未纳入 CI 的两层（都是有意为之，别当成遗漏）：
-#   verify:packaged  需要先有挂载好的 DMG 或 dist/mac* 的 .app，
-#                    且它验的正是「本机打出来的那个包」——放进 CI 没有意义。
-#   verify:app       需要真实窗口，见下方注释。
+#  想查当前凭据有哪些 scope（不用 gh）：
+#    TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
+#    curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i x-oauth-scopes
+# ──────────────────────────────────────────────────────────────────────
 
 name: Build
 
+# 触发方式：推 tag 即打包，例如  git tag v1.2.1 && git push origin v1.2.1
+#          产物在 Actions 页面该次运行的 Artifacts 里下载。
+# 签名情况：macOS 与 Windows 的安装包都未做代码签名，用户首次打开会被系统拦截
+#          （macOS 在「隐私与安全性」里放行，Windows 在 SmartScreen 里选「仍要运行」）。
 on:
   push:
     branches: [main]
@@ -50,7 +38,12 @@ on:
     branches: [main]
 
 jobs:
-  # 先跑类型检查与三层自检，全过才允许打包
+  # 先跑类型检查与三层自检，全过才允许打包。
+  #
+  # 未纳入 CI 的两层（都是有意为之，别当成遗漏）：
+  #   verify:packaged  需要先有挂载好的 DMG 或 dist/mac* 的 .app，
+  #                    而且它验的正是「本机刚打出来的那个包」—— 放进 CI 没有意义。
+  #   verify:app       需要真实窗口，见下方注释。
   verify:
     runs-on: ubuntu-latest
     steps:
