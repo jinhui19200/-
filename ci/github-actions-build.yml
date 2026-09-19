@@ -19,10 +19,11 @@
 #      3. 提交
 #
 #   B. 给凭据补权限后从命令行装
-#      1. 本机目前没装 gh，先装： brew install gh
-#      2. 终端执行： gh auth refresh -s workflow
+#      1. 终端执行（gh 装着但不在 PATH 上，用全路径）：
+#         GH="/Users/hui/Documents/New project/.tools/gh/gh_2.94.0_macOS_arm64/bin/gh"
+#         "$GH" auth refresh -s workflow
 #         （沙箱里做不了这一步：gh 写 macOS 钥匙串会被拒，实测过 6 种绕法全失败）
-#      3. mkdir -p .github/workflows
+#      2. mkdir -p .github/workflows
 #         git mv ci/github-actions-build.yml .github/workflows/build.yml
 #         git commit -m "装 CI 工作流" && git push
 #
