@@ -3,6 +3,44 @@
 > 每次提交前更新本文件，**最新记录在最上面**。
 > 格式：日期（精确到日）+ 修改功能简述。
 
+## 2026-09-20
+
+### 装上 GitHub Actions：打 tag 自动出 mac / win 安装包
+
+**做了什么**：仓库里加了 `.github/workflows/build.yml`（内容与 `ci/github-actions-build.yml`
+一致）。`verify` 作业在 ubuntu 上跑类型检查 + 数据层 + 界面三层自检；`build-mac` /
+`build-win` 只在推 tag 时跑，各自把安装包传成 Artifact。
+
+**工作流文件为什么另存一份在 `ci/`**：推送 `.github/workflows/` 下的文件需要 token 具备
+`workflow` scope，而本机凭据实测只有 `gist, read:org, repo`。所以工作流是靠网页 UI 贴进去的，
+`ci/` 那份留作可编辑的副本。**注意**：仓库里**存在** workflow 文件并不妨碍推送其他文件
+（已实测），只有真要改工作流本身才需要那个 scope。
+
+**踩到的坑：安装包打成功了，却因为「发布」失败而整体挂掉**
+
+第一次 tag 构建（run #3）`verify` 全绿，但 `build-mac` / `build-win` 都红。拉日志发现
+安装包**其实都产出了**：
+
+```
+• building  target=DMG   arch=arm64  file=dist/warehouse-manager-1.2.0-arm64.dmg
+• building  target=DMG   arch=x64    file=dist/warehouse-manager-1.2.0-x64.dmg
+• building  target=nsis              file=dist\warehouse-manager-1.2.0-setup.exe
+⨯ GitHub Personal Access Token is not set, neither programmatically, nor using env "GH_TOKEN"
+```
+
+electron-builder 检测到「在 tag 上跑」就**隐式去发 GitHub Release**，没有 token 直接报错
+退出 —— 把已经成功的构建结果一起带挂，`upload-artifact` 那步也因此被跳过，最后一无所获。
+日志里它自己给了提示：`Implicit publishing triggered by git tag. This behavior will be
+disabled in electron-builder v27.`
+
+**改法**：`build:mac` / `build:win` 各加 `--publish never`，把「构建」和「发布」拆开 ——
+构建永不发布；将来要发 Release 就在工作流里单独加一步 `gh release create`
+（写法记在 `ci/github-actions-build.yml` 头部）。
+
+**顺带修的**：把 `esbuild` 声明成显式 devDependency。`verify:store` 与
+`preview/build-preview.mjs` 都直接调它，之前只是靠 vite / electron-vite 传递带进来的 ——
+验证基建不该依赖「碰巧」。
+
 ## 2026-09-19
 
 ### 补上导出的端到端覆盖：真产出一份能被解析的 xlsx
