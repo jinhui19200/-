@@ -41,6 +41,49 @@ disabled in electron-builder v27.`
 `preview/build-preview.mjs` 都直接调它，之前只是靠 vite / electron-vite 传递带进来的 ——
 验证基建不该依赖「碰巧」。
 
+**验证 CI 产物：不只看「体积对」，要证明「内容一致、真能跑」**
+
+重新推 tag 后 run #4 三个作业全绿。但「绿了」只说明构建成功，**不说明打出来的东西和本地一致**。
+把两个 Artifact 下下来逐项核对（mac 261MB、win 111MB）：
+
+```
+app.asar SHA256   03776bb79f9a47a2e31575282b81c2f6…   ← 本地 DMG 与 CI DMG 完全一致
+app.asar 大小     1,370,417 字节                      ← 两边完全一致
+.app 未压缩体积   289 MB                              ← 两边完全一致
+```
+
+**内容逐字节相同，差异全在 DMG 容器本身**，而且方向与直觉相反：
+
+| | 本地 DMG | CI DMG |
+| --- | --- | --- |
+| 卷内 | `Applications` + `.app` | 同左，**外加** `.background.tiff`、`.VolumeIcon.icns`、`.DS_Store` |
+| 体积 | 141.8 MB | 127.4 MB（**小 10%**） |
+
+CI 那份**多**了背景图与卷图标（electron-builder 的 dmgbuild 做窗口美化），**却还小 10%** ——
+只可能是压缩级别：本地是 `hdiutil create` 绕行脚本打的（默认 zlib 级别），
+CI 走 electron-builder 正常路径（更高级别）。**这是沙箱绕行的代价：本地那两个 DMG 缺窗口美化，
+打开时是素白 Finder 窗口**，纯外观、功能无影响。
+
+- **CI 的 DMG 真启动验证**：挂载 CI 的 arm64 DMG 跑 `verify:packaged` → **37/37 通过**。
+  挂载、启动、渲染、12 个月窗口、左右滑动、回到最新、记录页 33 条、导出编码完成，全过
+- **Windows 产物几乎逐字节相同**：CI 的 exe 111,699,079 B vs 本地 111,698,095 B，
+  差 **984 字节（0.0009%）**。NSIS 的 exe 本身已 LZMA 压缩、zip 再压不动，所以这个对比有效，
+  比 mac 那边的证据还硬
+- **本地 asar 清单核对通过**：16 个文件 / 1.30MB，`scripts/`、`preview/`、`ci/`、`*.command`、
+  `.workbuddy-ai/` 一个都没混进去
+
+**下载 artifact 的两个技巧**（记在这里免得下次再花二十分钟）
+
+- artifact 是 zip，**中央目录在文件末尾** —— 只发一个 Range 请求取末尾 64KB，就能读出
+  里面每个文件的真实大小与偏移。**1.3 秒** vs 完整下载二十分钟。想确认「CI 产出的文件多大」
+  根本不用下全量
+- 真要下全量时**分块并行**：单连接只有 ~360KB/s，6~8 段并行能到 **2.3MB/s**。
+  但签名 URL 会中途失效，每块必须带重试 + 体积校验；另注意 `xargs` 内嵌整段脚本 + URL
+  会超命令行长度上限，worker 要写成独立文件、只传索引
+
+> 两个 Artifact **90 天后过期**。要变成永久可下载的 Release 附件，得给工作流加一步
+> `gh release create`（写法记在 `ci/github-actions-build.yml` 头部）。
+
 ## 2026-09-19
 
 ### 补上导出的端到端覆盖：真产出一份能被解析的 xlsx
