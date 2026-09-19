@@ -244,7 +244,7 @@ async function run(page, shot) {
     [...document.querySelectorAll('button.tab')].map((b) => b.textContent.trim())
   )
   check('四个页签：仓库 / 记录 / 报表 / 操作', tabs.join('|') === '仓库|记录|报表|操作', tabs.join('|'))
-  check('仓库页默认渲染 5 种物品', (await rowCount(page)) === 5, `${await rowCount(page)}`)
+  check('仓库页默认渲染 6 种物品', (await rowCount(page)) === 6, `${await rowCount(page)}`)
   const overflow = await page.evaluate(() => {
     const el = document.querySelector('.content')
     return { s: el.scrollWidth, c: el.clientWidth }
@@ -482,10 +482,13 @@ async function run(page, shot) {
         })
       return {
         labels: [...card.querySelectorAll('.plot-label')].map((e) => e.textContent.trim()),
-        // 两个刻度列各自的两个标签：[上半: 最大值, 0] / [下半: 0, 最大值]
+        // 两个刻度列各自的标签。正常是 [上半: 最大值] / [下半: 0, 最大值]；
+        // 窗口内零出入库时上半为空、下半只剩「0」（见 .plot-idle 的处理）
         gutters: [...card.querySelectorAll('.plot-gutter')].map((g) =>
           [...g.querySelectorAll('span')].map((s) => s.textContent.trim())
         ),
+        // 「近 N 个月无出入库」，只在零出入库的卡片上出现
+        idleText: card.querySelector('.plot-idle')?.textContent?.trim() ?? null,
         axis: box(card.querySelector('.plot-axis')),
         // 上半绘图区高度 = 满刻度对应的像素高度，用来反推每根柱子该多高
         halfH: Math.round(card.querySelector('.plot-in').getBoundingClientRect().height),
@@ -495,7 +498,7 @@ async function run(page, shot) {
     }, name)
 
   const cardCount = await page.evaluate(() => document.querySelectorAll('.report-card').length)
-  check('仓库里每个物品一张卡片（5 个物品 → 5 张）', cardCount === 5, `${cardCount}`)
+  check('仓库里每个物品一张卡片（6 个物品 → 6 张）', cardCount === 6, `${cardCount}`)
 
   const card = await reportCard('M3×8 螺丝')
   check('找到「M3×8 螺丝」的图表', card !== null)
@@ -637,6 +640,40 @@ async function run(page, shot) {
       JSON.stringify(totals)
     )
   }
+
+  // ── 窗口内零出入库（慢周转物料，是个正常状态） ──
+  // 修之前这张卡会显示刻度「1 / 0 / 1」，一根柱子都没有 ——
+  // 一个空图表标个「1」是纯噪音，看着还像渲染坏了
+  const idle = await reportCard('闲置物料 X')
+  check('找到「闲置物料 X」的卡片（窗口内零出入库）', idle !== null)
+  if (idle) {
+    check(
+      '零出入库时不显示刻度数字（不是标一个无意义的「1」）',
+      idle.gutters[0].length === 0 && idle.gutters[1].join('|') === '0',
+      JSON.stringify(idle.gutters)
+    )
+    check(
+      '零出入库时给出说明文字',
+      /^近 6 个月无出入库$/.test(idle.idleText ?? ''),
+      String(idle.idleText)
+    )
+    check(
+      '零出入库时没有柱子',
+      idle.barsIn.every((b) => b.h === 0) && idle.barsOut.every((b) => b.h === 0),
+      `入 ${idle.barsIn.map((b) => b.h).join(',')} / 出 ${idle.barsOut.map((b) => b.h).join(',')}`
+    )
+    check(
+      '零出入库时也没有数值标注',
+      [...idle.barsIn, ...idle.barsOut].every((b) => b.value === null)
+    )
+    // 月份标签要照常显示 —— 否则用户分不清「没数据」和「图没画出来」
+    check('零出入库时横轴月份仍在', idle.labels.join('|') === '4月|5月|6月|7月|8月|9月', idle.labels.join('|'))
+  }
+  check(
+    '有出入库的卡片不显示「无出入库」说明',
+    card === null || card.idleText === null,
+    String(card?.idleText)
+  )
 
   await shot(page, '2c-reports')
   await switchTab(page, '仓库')
@@ -818,7 +855,7 @@ async function run(page, shot) {
   check('提交后表单清空名称', (await nameInput.inputValue()) === '', await nameInput.inputValue())
   await switchTab(page, '仓库')
   await page.waitForTimeout(400)
-  check('仓库页物品数 5 → 6', (await rowCount(page)) === 6, `${await rowCount(page)}`)
+  check('仓库页物品数 6 → 7', (await rowCount(page)) === 7, `${await rowCount(page)}`)
   const newRow = await warehouseRow(page, '排针 2.54mm')
   check(
     '新物品库存 = 300，单位 = 排',

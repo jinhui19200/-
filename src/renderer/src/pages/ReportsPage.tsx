@@ -84,8 +84,14 @@ interface ChartProps {
 }
 
 function ItemChart({ item, months, series }: ChartProps): React.JSX.Element {
-  // 上下共用这个刻度。至少取 1，避免全是 0 时出现 0 除
-  const max = Math.max(1, ...series.flatMap((r) => [r.in, r.out]))
+  /**
+   * 该物品在窗口内的真实峰值。0 表示这段时间完全没有出入库 ——
+   * 慢周转的物料本来就可能半年不动，是个正常状态，不是异常。
+   */
+  const peak = Math.max(0, ...series.flatMap((r) => [r.in, r.out]))
+  // 只用来避免 0 除，**不用于显示**：没有出入库时标一个「1」的刻度是纯噪音，
+  // 看着还像渲染坏了。显示走 peak。
+  const max = Math.max(1, peak)
   const pct = (v: number): string => `${(v / max) * 100}%`
   // 极小但非零的值按比例画出来不到 1px，给个 2px 的短桩表示「有，但很少」
   const stub = (v: number): number => (v > 0 ? 2 : 0)
@@ -106,12 +112,10 @@ function ItemChart({ item, months, series }: ChartProps): React.JSX.Element {
 
       <div className="report-plot">
         {/* 零轴两侧各标一次「0」会重复，只在轴下方留一个 —— 轴本身就是零线 */}
-        <div className="plot-gutter plot-gutter-in">
-          <span>{formatQuantity(max)}</span>
-        </div>
+        <div className="plot-gutter plot-gutter-in">{peak > 0 && <span>{formatQuantity(peak)}</span>}</div>
         <div className="plot-gutter plot-gutter-out">
           <span>0</span>
-          <span>{formatQuantity(max)}</span>
+          {peak > 0 && <span>{formatQuantity(peak)}</span>}
         </div>
 
         <div className="plot-half plot-in">
@@ -152,6 +156,12 @@ function ItemChart({ item, months, series }: ChartProps): React.JSX.Element {
             </span>
           ))}
         </div>
+
+        {/*
+          窗口内零出入库时给一句话。不隐藏整张图：卡片高度保持一致，
+          用户也能一眼分辨「这个物品存在但没动过」和「图表没画出来」。
+        */}
+        {peak === 0 && <p className="plot-idle">近 {months.length} 个月无出入库</p>}
       </div>
     </section>
   )

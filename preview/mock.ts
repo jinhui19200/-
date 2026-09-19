@@ -35,7 +35,11 @@ function seed(): DB {
     { id: 'i2', name: '贴片电阻 10kΩ', unit: '个', quantity: 80, threshold: 100, createdAt: NOW, updatedAt: NOW },
     { id: 'i3', name: '铜线 1.5mm²', unit: '米', quantity: -15, threshold: 50, createdAt: NOW, updatedAt: NOW },
     { id: 'i4', name: '焊锡丝 0.8mm', unit: '卷', quantity: 12, threshold: 10, createdAt: NOW, updatedAt: NOW },
-    { id: 'i5', name: 'PCB 打样板', unit: '块', quantity: 0, threshold: 5, createdAt: NOW, updatedAt: NOW }
+    { id: 'i5', name: 'PCB 打样板', unit: '块', quantity: 0, threshold: 5, createdAt: NOW, updatedAt: NOW },
+    // 窗口内零出入库：报表页要显示「近 N 个月无出入库」而不是一个空刻度。
+    // 库存刻意设为**高于**警戒值 —— 让「零出入库」和「低于警戒值」两个状态保持正交，
+    // 否则它会连带扰动所有跟低库存有关的计数断言，排查时容易误判。
+    { id: 'i9', name: '闲置物料 X', unit: '个', quantity: 50, threshold: 10, createdAt: NOW, updatedAt: NOW }
   ]
   const mk = (
     itemId: string,
