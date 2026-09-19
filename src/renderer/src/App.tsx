@@ -1,4 +1,8 @@
 import { useEffect, useState } from 'react'
+import { useAppData } from './hooks/useAppData'
+import { OperationPage } from './pages/OperationPage'
+import { RecordsPage } from './pages/RecordsPage'
+import { WarehousePage } from './pages/WarehousePage'
 
 type TabKey = 'warehouse' | 'records' | 'operation'
 
@@ -11,10 +15,9 @@ const TABS: { key: TabKey; label: string }[] = [
 export default function App() {
   const [tab, setTab] = useState<TabKey>('warehouse')
   const [bridge, setBridge] = useState('通道检测中…')
+  const { db, ready, error } = useAppData()
 
   useEffect(() => {
-    // 用 Promise.resolve() 包一层：即使 window.api 不存在（例如在普通浏览器里
-    // 打开渲染进程做验证），同步异常也会被转成 rejection，不会打断渲染。
     Promise.resolve()
       .then(() => window.api.ping())
       .then((r) => setBridge(`主进程通道正常（返回 ${r}）`))
@@ -25,7 +28,9 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>库存管理系统</h1>
-        <span className="bridge-status">{bridge}</span>
+        <span className="bridge-status">
+          {error ? `数据读取异常：${error}` : bridge}
+        </span>
       </header>
 
       <nav className="tabs">
@@ -42,35 +47,11 @@ export default function App() {
       </nav>
 
       <main className="content">
-        {tab === 'warehouse' && (
-          <Placeholder
-            title="仓库"
-            desc="物品列表：名称 / 数量 / 单位，每行带「出库」「入库」两个按钮。"
-          />
-        )}
-        {tab === 'records' && (
-          <Placeholder
-            title="记录"
-            desc="出入库流水：时间 / 名称 / 数量 / 单位 / 操作，支持搜索、筛选、撤销、导出 Excel。"
-          />
-        )}
-        {tab === 'operation' && (
-          <Placeholder
-            title="操作"
-            desc="出库、入库两个竖块，各自填写时间 / 名称 / 数量 / 单位，各带一个提交按钮。"
-          />
-        )}
+        {!ready && <p className="loading">正在读取数据…</p>}
+        {ready && tab === 'warehouse' && <WarehousePage items={db.items} />}
+        {ready && tab === 'records' && <RecordsPage records={db.records} />}
+        {ready && tab === 'operation' && <OperationPage />}
       </main>
     </div>
-  )
-}
-
-function Placeholder({ title, desc }: { title: string; desc: string }) {
-  return (
-    <section className="placeholder">
-      <h2>{title}</h2>
-      <p>{desc}</p>
-      <p className="placeholder-note">当前为 P1 阶段：仅验证工程跑通，界面逻辑将在后续阶段实现。</p>
-    </section>
   )
 }

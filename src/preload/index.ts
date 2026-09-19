@@ -1,11 +1,48 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
+import type { DB, DeleteRecordResult, TransactionInput, TransactionResult } from '@shared/types'
 
-// 暴露给渲染进程的 API。
-// P2 阶段会在这里补上数据层的调用（applyTransaction / deleteRecord / getSnapshot 等）。
+/**
+ * 数据变更订阅表。
+ *
+ * 这里刻意用「订阅号 + 取消订阅号」而不是「返回一个取消订阅函数」：
+ * contextBridge 每次跨进程传函数都会包一层新的代理，
+ * 同一个回调传回来时已经不是同一个引用了，没法用来删除。
+ * 用数字做键则完全绕开这个问题。
+ */
+let nextSubscriberId = 0
+const changeSubscribers = new Map<number, () => void>()
+
+ipcRenderer.on('db:changed', () => {
+  for (const callback of changeSubscribers.values()) callback()
+})
+
 const api = {
-  /** 连通性自检：确认主进程与渲染进程之间的通道正常 */
-  ping: (): Promise<string> => ipcRenderer.invoke('app:ping')
+  /** 连通性自检 */
+  ping: (): Promise<string> => ipcRenderer.invoke('app:ping'),
+
+  /** 读取当前数据快照（物品 + 记录） */
+  getSnapshot: (): Promise<DB> => ipcRenderer.invoke('db:snapshot'),
+
+  /** 出库 / 入库 —— 三个页面共用这一个入口 */
+  applyTransaction: (input: TransactionInput): Promise<TransactionResult> =>
+    ipcRenderer.invoke('db:transaction', input),
+
+  /** 撤销记录（会反向冲销库存） */
+  deleteRecord: (id: string): Promise<DeleteRecordResult> =>
+    ipcRenderer.invoke('db:deleteRecord', id),
+
+  /** 订阅数据变更，返回订阅号 */
+  onChanged: (callback: () => void): number => {
+    const id = ++nextSubscriberId
+    changeSubscribers.set(id, callback)
+    return id
+  },
+
+  /** 取消订阅 */
+  offChanged: (id: number): void => {
+    changeSubscribers.delete(id)
+  }
 }
 
 export type Api = typeof api

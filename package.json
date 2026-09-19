@@ -11,6 +11,7 @@
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",
+    "verify:store": "esbuild scripts/verify-store.ts --bundle --platform=node --format=esm --alias:@shared=./src/shared --outfile=out/verify-store.mjs --log-level=warning && node out/verify-store.mjs",
     "build": "electron-vite build",
     "build:unpack": "npm run build && electron-builder --dir",
     "build:win": "npm run build && electron-builder --win --x64"

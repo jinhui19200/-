@@ -5,3 +5,6 @@ dist/
 *.local
 .DS_Store
 *.log
+
+# 项目本地的 AI 工作记忆，不属于源码，不应进仓库
+.workbuddy-ai/

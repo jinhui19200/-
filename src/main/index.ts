@@ -2,6 +2,7 @@ import { app, shell, BrowserWindow } from 'electron'
 import { join } from 'node:path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
+import { initStore, load } from './store/db'
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -48,8 +49,13 @@ if (!gotTheLock) {
     }
   })
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     electronApp.setAppUserModelId('com.jinhui.warehouse-manager')
+
+    // 先定位数据文件并加载完成，再开窗口 —— 保证渲染进程一启动就能拿到数据，
+    // 不会出现「界面已渲染、数据还没到位」的空窗期
+    initStore(app.getPath('userData'))
+    await load()
 
     registerIpcHandlers()
 
