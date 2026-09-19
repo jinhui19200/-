@@ -503,8 +503,23 @@ async function run(page, shot) {
       JSON.stringify(card.gutters)
     )
 
-    const inAbove = card.barsIn.filter((b) => b.h > 0).every((b) => b.bottom <= card.axis.top + 1)
-    const outBelow = card.barsOut.filter((b) => b.h > 0).every((b) => b.top >= card.axis.bottom - 1)
+    // `every()` 在空数组上恒为 true —— 柱子要是因为回归全没了，
+    // 下面两条「全在轴某侧」会**静默通过**。所以先把非空性钉死。
+    const nonZeroIn = card.barsIn.filter((b) => b.h > 0)
+    const nonZeroOut = card.barsOut.filter((b) => b.h > 0)
+    check(
+      '确有非零入库柱（否则「全在轴上方」是空集上的真命题）',
+      nonZeroIn.length > 0,
+      `${nonZeroIn.length}/${card.barsIn.length} 根非零`
+    )
+    check(
+      '确有非零出库柱（同上）',
+      nonZeroOut.length > 0,
+      `${nonZeroOut.length}/${card.barsOut.length} 根非零`
+    )
+
+    const inAbove = nonZeroIn.every((b) => b.bottom <= card.axis.top + 1)
+    const outBelow = nonZeroOut.every((b) => b.top >= card.axis.bottom - 1)
     check('入库柱全部在零轴上方', inAbove, JSON.stringify(card.barsIn.map((b) => [b.h, b.bottom])))
     check('出库柱全部在零轴下方', outBelow, JSON.stringify(card.barsOut.map((b) => [b.h, b.top])))
 
