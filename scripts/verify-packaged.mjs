@@ -344,6 +344,48 @@ try {
   const legend = await page.$$eval('.legend', (els) => els.map((e) => e.textContent.trim()))
   check('图例两项', legend.length === 2, legend.join(' | '))
 
+  // ---- 导出 Excel：证明打包后的 xlsx 编码器不抛异常 ----
+  //
+  // 打包配置把 node_modules/xlsx 排除了（依据是它被 Vite 内联进渲染 bundle）。
+  // 这个前提一旦不成立，导出会**静默失效**。
+  //
+  // 但真 Electron 里没法像预览版那样拦下字节：`window.api` 是 contextBridge 暴露的，
+  // **frozen + sealed** —— 赋值静默失败、`defineProperty` 抛 TypeError，
+  // 连 `window.api` 本身都不可写（实测结论）。而真实导出走原生保存对话框，也点不了。
+  //
+  // 所以这一层只验「编码器跑通了没抛」：把可写的 `window.alert` 换掉记录消息，
+  // 点导出后若弹了「导出异常」说明 `XLSX.write` 炸了。
+  // **字节级的校验在 verify-ui 里做**（预览版 window.api 是普通对象，可替换，
+  // 且跑的渲染 bundle 与打包产物是同一份）—— 两层合起来才覆盖完整。
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  const rowCount = await page.$$eval('table.table tbody tr', (rs) => rs.length)
+  check('记录页有 33 条（30 条种子 + 3 条界面录入）', rowCount === 33, String(rowCount))
+
+  await page.evaluate(() => {
+    window.__alerts = []
+    window.alert = (m) => window.__alerts.push(String(m))
+    const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('导出'))
+    if (b) b.click()
+  })
+  await sleep(1800)
+  const alerts = await page.evaluate(() => window.__alerts ?? ['<取不到，可能被原生对话框挡住>'])
+  const exportErr = alerts.filter((m) => m.includes('导出异常') || m.includes('导出失败'))
+  check('点「导出 Excel」后没有弹出导出异常/失败', exportErr.length === 0, exportErr.join(' | '))
+
+  // 「成功」那条 alert 要等保存对话框关掉之后才弹，所以这里**不该**看到它。
+  // 真正能证明「编码已完成、正等对话框」的证据是按钮停在「导出中…」：
+  // 若 XLSX.write 抛了，catch 会把 exporting 复位，按钮就退回「导出 Excel」了。
+  // （已实测：原生保存对话框开着时 CDP 仍能 evaluate，DOM 读得到。）
+  const exportBtnText = await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('导出'))
+    return b ? b.textContent.trim() : null
+  })
+  check('导出按钮停在「导出中…」（说明编码完成、正等保存对话框）',
+    exportBtnText !== null && exportBtnText.includes('导出中'), String(exportBtnText))
+  check('此时尚未出现「已导出到」提示（对话框还没关）',
+    !alerts.some((m) => m.includes('已导出到')), alerts.join(' | '))
+
   console.log('\n  首张卡标注（月份从旧到新）：')
   console.log('    入库 ' + card.barsIn.map((b) => b.value ?? '·').join(', '))
   console.log('    出库 ' + card.barsOut.map((b) => b.value ?? '·').join(', '))

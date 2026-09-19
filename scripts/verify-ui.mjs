@@ -1111,11 +1111,81 @@ async function run(page, shot) {
     await clockTime.inputValue()
   )
 
-  // ── 9. 控制台 ────────────────────────────────────────────
-  section('9. 渲染进程控制台')
+  // ── 9. 导出 Excel ───────────────────────────────────────
+  section('9. 导出 Excel：真产出一份能被解析的工作簿')
+
+  /*
+   * 打包配置把 node_modules/xlsx 排除了（依据是它被 Vite 内联进渲染 bundle）。
+   * 这个前提一旦不成立，导出会**静默失效** —— 而真实导出走原生保存对话框，
+   * Playwright 点不了。
+   *
+   * 关键：在**预览版里可以绕开**。预览版的 `window.api` 是 preview/mock.ts 里
+   * 直接挂上去的普通对象，所以能替换掉 `exportXlsx`，只截取渲染进程**已经算好**的
+   * 字节。而预览版跑的渲染 bundle 与打包产物是同一份，因此这确实覆盖了
+   * 「打包后导出还能不能用」这个风险。
+   *
+   * 真 Electron 里做不到：`window.api` 是 contextBridge 暴露的，frozen + sealed，
+   * 赋值静默失败、`defineProperty` 直接抛 TypeError，连 `window.api` 本身都不可写。
+   * （这个结论是实测出来的，不是猜的。）
+   *
+   * 截到的字节要拿回 Node 用 xlsx **真解析一遍**：只断言「长度非零」不够 ——
+   * 半截数据、错的工作簿类型都能骗过长度检查。
+   */
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  const exportRows = await page.$$eval('table.table tbody tr', (rs) => rs.length)
+  check('记录页有数据可供导出', exportRows > 0, `${exportRows} 行`)
+
+  // alert 要一起换掉：导出成功/失败时代码都会弹 alert，那是**阻塞**对话框。
+  const patchOk = await page.evaluate(() => {
+    window.alert = () => {}
+    window.__export = null
+    window.api.exportXlsx = async (data, name) => {
+      const bytes = Uint8Array.from(data)
+      let bin = ''
+      for (const b of bytes) bin += String.fromCharCode(b)
+      window.__export = { name, len: bytes.length, b64: btoa(bin) }
+      return { ok: true, path: '（已拦截，未真的写文件）' }
+    }
+    return window.api.exportXlsx.name === '' || String(window.api.exportXlsx).includes('__export')
+  })
+  check('预览版 window.api 可替换（真 Electron 里是 frozen，做不到）', patchOk === true)
+
+  await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => x.textContent.includes('导出'))
+    if (b) b.click()
+  })
+  await page.waitForFunction(() => window.__export !== null, null, { timeout: 5000 }).catch(() => {})
+  const exported = await page.evaluate(() => window.__export)
+  check('点「导出 Excel」后渲染进程产出了字节', exported !== null && exported.len > 0,
+    exported ? `${exported.name} / ${exported.len} 字节` : '没截到')
+  check('默认文件名是「出入库记录.xlsx」', exported?.name === '出入库记录.xlsx', String(exported?.name))
+
+  if (exported?.b64) {
+    const xbuf = Buffer.from(exported.b64, 'base64')
+    // xlsx 本质是 zip，头四字节应当是 PK\x03\x04
+    check('字节以 ZIP 魔数 PK 03 04 开头（xlsx 就是 zip）',
+      xbuf[0] === 0x50 && xbuf[1] === 0x4b && xbuf[2] === 0x03 && xbuf[3] === 0x04,
+      [...xbuf.slice(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join(' '))
+
+    const XLSX = require('xlsx')
+    const wb = XLSX.read(xbuf, { type: 'buffer' })
+    check('能被 xlsx 解析出唯一工作表「出入库记录」',
+      wb.SheetNames.length === 1 && wb.SheetNames[0] === '出入库记录', wb.SheetNames.join(' | '))
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets['出入库记录'], { header: 1 })
+    check('表头为 时间/名称/数量/单位/操作人/类型',
+      JSON.stringify(rows[0]) === JSON.stringify(['时间', '名称', '数量', '单位', '操作人', '类型']),
+      JSON.stringify(rows[0]))
+    check('数据行数与界面上的记录数一致（表头之外）', rows.length - 1 === exportRows,
+      `表里 ${rows.length - 1} 行 / 界面 ${exportRows} 行`)
+    check('导出的是全部记录，不是空表', rows.slice(1).some((r) => typeof r[1] === 'string' && r[1].length > 0))
+  }
+
+  // ── 10. 控制台 ───────────────────────────────────────────
+  section('10. 渲染进程控制台')
   check('无 console.error / pageerror', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
 
-  section('10. 构建产物：导出依赖（xlsx）确实在渲染 bundle 里')
+  section('11. 构建产物：导出依赖（xlsx）确实在渲染 bundle 里')
 
   /*
    * 打包配置把 node_modules/xlsx 整个排除了（asar 从 7MB 降到约 1.1MB），
