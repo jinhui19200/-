@@ -1,26 +1,34 @@
-# GitHub Actions 工作流 —— 待安装模板
+# GitHub Actions 工作流 —— 待安装
 #
-# 为什么放在 ci/ 而不是 .github/workflows/：
-#   推送 `.github/workflows/` 下的文件需要 token 具备 `workflow` scope，
-#   当前凭据没有该权限，GitHub 会直接拒绝推送。
-#   所以先把内容存在这里，需要时手动安装。
+# 这个文件**就是要装进 .github/workflows/build.yml 的全部内容**，
+# 从 `name:` 往下原样复制即可（上面这些注释也是 YAML 注释，一起复制没问题）。
+#
+# 为什么它现在待在 ci/ 而不是 .github/workflows/：
+#   推送 `.github/workflows/` 下的文件需要 token 具备 `workflow` scope。
+#   本机钥匙串里那个凭据实测只有 `gist, read:org, repo`（x-oauth-scopes 头），
+#   缺 `workflow`，GitHub 会直接拒收整个 push。
+#   ⇒ 没拿到 scope 之前，千万别把它 commit 进 .github/workflows/，
+#     否则之后每一次 git push 都会失败。
 #
 # 安装方式（二选一）：
 #
-#   A. 网页上安装（推荐，最省事）
-#      1. 打开 https://github.com/jinhui19200/-/actions
-#      2. 点「New workflow」→「set up a workflow yourself」
-#      3. 文件名填 build.yml，路径保持 .github/workflows/build.yml
-#      4. 把本文件从 `name:` 开始的内容全部贴进去，提交
+#   A. 网页上装（推荐：不碰凭据，一分钟）
+#      1. 打开
+#         https://github.com/jinhui19200/-/new/main?filename=.github/workflows/build.yml
+#      2. 把本文件全部内容粘进去
+#      3. 提交
 #
-#   B. 给 token 补权限后自动推送
-#      1. 终端执行： gh auth refresh -s workflow   （或重新登录时勾上 workflow）
-#      2. 然后： git mv ci/github-actions-build.yml .github/workflows/build.yml
-#         mkdir -p .github/workflows 若不存在，再 git commit && git push
+#   B. 给凭据补权限后从命令行装
+#      1. 本机目前没装 gh，先装： brew install gh
+#      2. 终端执行： gh auth refresh -s workflow
+#         （沙箱里做不了这一步：gh 写 macOS 钥匙串会被拒，实测过 6 种绕法全失败）
+#      3. mkdir -p .github/workflows
+#         git mv ci/github-actions-build.yml .github/workflows/build.yml
+#         git commit -m "装 CI 工作流" && git push
 #
 # 触发方式：
-#   推 tag 即打包，例如  git tag v1.2.0 && git push origin v1.2.0
-#   打包产物在 Actions 页面的 Artifacts 里下载。
+#   推 tag 即打包，例如  git tag v1.2.1 && git push origin v1.2.1
+#   打包产物在 Actions 页面该次运行的 Artifacts 里下载。
 #
 # 说明：macOS 与 Windows 的安装包都未做代码签名，
 #   用户在系统里首次打开会被拦截（macOS 需在「隐私与安全性」里放行，
