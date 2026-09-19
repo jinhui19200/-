@@ -51,12 +51,13 @@ jobs:
       # 界面自检：真实 Chromium 里量布局几何 + 跑交互（65 项）
       - run: npx playwright install --with-deps chromium
       - run: npm run verify:ui
-      # 端到端自检（真实 Electron + IPC + 磁盘，58 项）—— 默认不开：
-      # 它需要能起 Electron 窗口的环境（隐藏窗口也需要），ubuntu 上要先装 xvfb。
+      # 端到端自检（真实 Electron + IPC + 磁盘，58 项）与
+      # 真应用自检（真实入口 + 真实窗口 + CDP，34 项）—— 默认不开：
+      # 它们需要能起 Electron 窗口的环境（隐藏窗口也需要），ubuntu 上要先装 xvfb。
       # 想让它进 CI，把下面两行取消注释即可（首次跑建议先手动确认通过）：
       #
       # - run: sudo apt-get update && sudo apt-get install -y xvfb
-      # - run: xvfb-run -a npm run verify:electron
+      # - run: xvfb-run -a npm run verify:electron && xvfb-run -a npm run verify:app
 
   build-mac:
     runs-on: macos-latest

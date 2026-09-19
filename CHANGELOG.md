@@ -5,6 +5,32 @@
 
 ## 2026-09-19
 
+### 真应用自检 `verify:app`（第四个验证层）
+
+- 新增 `scripts/verify-app.mjs` 与 `npm run verify:app`：启动 `out/main/index.js`
+  —— **就是双击时跑的那个入口** —— 再用 CDP 连上它的**真实窗口**驱动，34 项断言 / 6 组
+- 补上此前唯一没验过的一环：**「双击之后应用真的能打开吗」**。
+  `createWindow()` 里的 `join(__dirname, '../preload/index.js')` 这类路径写错**不会报错**，
+  窗口照开、只是 `window.api` 是 undefined、界面一片空白 —— 只有真跑真实入口才发现得了
+- 覆盖：真实入口启动、窗口标题、加载的是打包产物、preload 注入、IPC 往返、
+  界面录入 → 真实落盘、负库存走真实 alert、**真实重启后数据是否还在**、
+  真实窗口里的撤销与反向冲销、控制台零错误
+- 隔离措施：`--user-data-dir` 指向临时目录（**绝不碰真实应用数据**）、
+  `--window-position=-3000,-3000` 把窗口挪到屏幕外（不打断手头的事）、
+  跑完即杀进程并删临时目录
+- 开关必须放在**脚本路径之后**：放前面会被 Electron 自己的参数解析器拒掉
+  （`bad option: --no-sandbox`）；Chromium 解析整条命令行，放后面照样生效
+- `VERIFY_APP_SHOTS=1` 可存截图到 `out/verify-app/`（窗口在屏幕外也能截页面内容）
+
+四层验证的分工：
+
+| 脚本 | 覆盖链路 | 项数 |
+|---|---|---|
+| `verify:store` | 数据层（纯 Node 直接调 store） | 45 |
+| `verify:electron` | 端到端（隐藏窗口跑真 Electron：IPC + 磁盘） | 58 |
+| `verify:ui` | 界面（真实浏览器：布局几何 + 交互） | 65 |
+| `verify:app` | 真应用（真实入口 + 真实窗口 + CDP 驱动） | 34 |
+
 ### 界面自检 `verify:ui`（第三个验证层）
 
 - 新增 `scripts/verify-ui.mjs` 与 `npm run verify:ui`：在真实 Chromium 里
