@@ -470,7 +470,16 @@ async function run(page, shot) {
         }
       }
       const readBars = (sel) =>
-        [...card.querySelectorAll(sel)].map((b) => ({ ...box(b), title: b.getAttribute('title') }))
+        [...card.querySelectorAll(sel)].map((b) => {
+          const lab = b.querySelector('.plot-value')
+          return {
+            ...box(b),
+            title: b.getAttribute('title'),
+            // 柱子上标注的数值。0 的月份不标，所以这里是 null 而不是 '0'
+            value: lab ? lab.textContent.trim() : null,
+            labelBox: lab ? box(lab) : null
+          }
+        })
       return {
         labels: [...card.querySelectorAll('.plot-label')].map((e) => e.textContent.trim()),
         // 两个刻度列各自的两个标签：[上半: 最大值, 0] / [下半: 0, 最大值]
@@ -478,6 +487,8 @@ async function run(page, shot) {
           [...g.querySelectorAll('span')].map((s) => s.textContent.trim())
         ),
         axis: box(card.querySelector('.plot-axis')),
+        // 上半绘图区高度 = 满刻度对应的像素高度，用来反推每根柱子该多高
+        halfH: Math.round(card.querySelector('.plot-in').getBoundingClientRect().height),
         barsIn: readBars('.plot-in .plot-bar'),
         barsOut: readBars('.plot-out .plot-bar')
       }
@@ -534,6 +545,60 @@ async function run(page, shot) {
       `${card.barsIn[0].h}/${card.barsOut[0].h}`
     )
 
+    // ── 柱子上的数值标注 ──
+    // 标注的数值应与 title 里的数字一致（两处都源自同一条月度聚合，
+    // 但渲染路径不同，标注写错的话这里能抓到）
+    const numOf = (s) => (s ? s.match(/(\d+(?:\.\d+)?)\s*$/)?.[1] ?? null : null)
+    const labelled = card.barsIn.filter((b) => b.value !== null)
+    check(
+      '确有柱子带数值标注（否则下面的断言是空集上的真命题）',
+      labelled.length > 0,
+      `${labelled.length}/${card.barsIn.length} 根有标注`
+    )
+    check(
+      '入库柱标注的数值与 title 一致',
+      labelled.every((b) => b.value === numOf(b.title)),
+      JSON.stringify(labelled.map((b) => [b.value, numOf(b.title)]))
+    )
+    check('6 月入库柱标注 300', card.barsIn[2].value === '300', String(card.barsIn[2].value))
+    check('7 月出库柱标注 150', card.barsOut[3].value === '150', String(card.barsOut[3].value))
+
+    // 值为 0 不标：6 个月 × 上下两半，满屏的「0」比不标更难看
+    check(
+      '没有数据的月份不显示标注（避免满屏 0）',
+      card.barsIn[0].value === null && card.barsOut[0].value === null,
+      `${card.barsIn[0].value}/${card.barsOut[0].value}`
+    )
+
+    // 标注要贴在**自己那根柱子**外侧：入库在上、出库在下。
+    // 若改成统一飘在某一行上，短柱的数字会离柱子很远，读不出对应关系。
+    const inLabelled = card.barsIn.filter((b) => b.labelBox)
+    const outLabelled = card.barsOut.filter((b) => b.labelBox)
+    check(
+      '入库柱的标注在柱子正上方',
+      inLabelled.length > 0 && inLabelled.every((b) => b.labelBox.bottom <= b.top + 1),
+      JSON.stringify(inLabelled.map((b) => [b.labelBox.bottom, b.top]))
+    )
+    check(
+      '出库柱的标注在柱子正下方',
+      outLabelled.length > 0 && outLabelled.every((b) => b.labelBox.top >= b.bottom - 1),
+      JSON.stringify(outLabelled.map((b) => [b.labelBox.top, b.bottom]))
+    )
+    // 最高那根柱子的标注会溢出 92px 绘图区，靠卡片头部的外边距让位 ——
+    // 有人把那段外边距调小的话，这里会失败
+    const topLabel = inLabelled.reduce((a, b) => (b.h > a.h ? b : a), inLabelled[0])
+    const headBottom = await page.evaluate(() => {
+      const el = [...document.querySelectorAll('.report-card')].find(
+        (c) => c.querySelector('.report-name')?.textContent?.trim() === 'M3×8 螺丝'
+      )
+      return Math.round(el.querySelector('.report-head').getBoundingClientRect().bottom)
+    })
+    check(
+      '最高柱的标注没有压到卡片头部',
+      topLabel.labelBox.top >= headBottom,
+      `标注顶 ${topLabel.labelBox.top} vs 头部底 ${headBottom}`
+    )
+
     // 柱高与数值成比例：300 的柱应约为 150 的两倍（各留 3px 舍入误差）
     const h300 = card.barsIn[2].h
     const h150 = card.barsIn[5].h
@@ -541,6 +606,20 @@ async function run(page, shot) {
       '柱高与数值成比例（300 的柱 ≈ 150 的两倍）',
       Math.abs(h300 - 2 * h150) <= 3,
       `300→${h300}px，150→${h150}px`
+    )
+
+    // 上面那条只盯了两根柱子。这里把**每根带标注的柱子**都按
+    // 满刻度（上半刻度标签 = 最大值）反推一遍，避免只有某两根碰巧对
+    const scaleMax = Number(card.gutters[0][0])
+    const allLabelled = [...card.barsIn, ...card.barsOut].filter((b) => b.value !== null)
+    const expectH = (v) => Math.max(2, (Number(v) / scaleMax) * card.halfH)
+    const off = allLabelled.filter((b) => Math.abs(b.h - expectH(b.value)) > 2)
+    check(
+      '每根带标注的柱子都与自身数值成比例（满刻度 300 → 92px）',
+      allLabelled.length > 0 && off.length === 0,
+      off.length === 0
+        ? `${allLabelled.length} 根全部吻合`
+        : JSON.stringify(off.map((b) => [b.value, b.h, Math.round(expectH(b.value))]))
     )
 
     const totals = await page.evaluate(() => {

@@ -705,7 +705,10 @@ body {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  margin-bottom: 10px;
+  /* 不只是排版留白：入库柱的数值标注标在柱子**上方**，最高那根（满刻度）
+     的标注会溢出 92px 的绘图区约 12px。这段外边距就是给它留的位置。
+     改小会导致最高柱的标注压到物品名上（verify-ui 有断言盯着）。 */
+  margin-bottom: 22px;
 }
 
 .report-name {
@@ -855,9 +858,42 @@ body {
   border-radius: 0 0 3px 3px;
 }
 
+/*
+ * 柱子上的数值标注：入库标在柱顶上方，出库标在柱底下方。
+ *
+ * 刻意**标在柱子外面**而不是柱子里面：低于 2px 的短桩（值很小但非零）根本塞不下字，
+ * 标在里面要么被裁掉、要么得把短桩撑高 —— 而撑高就等于撒谎，柱子高度不再代表数量。
+ *
+ * 位置用 `bottom/top: 100%` 贴着柱子边缘，所以每根柱子的标注都紧挨着自己，
+ * 而不是统一飘在某一行上（那样短柱的数字会离柱子很远，读不出对应关系）。
+ */
+.plot-value {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+.value-in {
+  bottom: 100%;
+  margin-bottom: 2px;
+}
+
+.value-out {
+  top: 100%;
+  margin-top: 2px;
+}
+
 .plot-labels {
   display: flex;
-  padding-top: 6px;
+  /* 同上：出库柱的数值标注在柱子**下方**，最高那根会向下溢出约 10px。
+     这段内边距是它的落脚点，改小会和月份标签叠在一起。 */
+  padding-top: 20px;
 }
 
 .plot-label {

@@ -121,7 +121,10 @@ function ItemChart({ item, months, series }: ChartProps): React.JSX.Element {
                 className="plot-bar bar-in"
                 style={{ height: pct(r.in), minHeight: stub(r.in) }}
                 title={`${r.month} 入库 ${formatQuantity(r.in)}`}
-              />
+              >
+                {/* 值为 0 不标：6 个月 × 上下两半，满屏的「0」比没有标注更难看 */}
+                {r.in > 0 && <span className="plot-value value-in">{formatQuantity(r.in)}</span>}
+              </div>
             </div>
           ))}
         </div>
@@ -135,7 +138,9 @@ function ItemChart({ item, months, series }: ChartProps): React.JSX.Element {
                 className="plot-bar bar-out"
                 style={{ height: pct(r.out), minHeight: stub(r.out) }}
                 title={`${r.month} 出库 ${formatQuantity(r.out)}`}
-              />
+              >
+                {r.out > 0 && <span className="plot-value value-out">{formatQuantity(r.out)}</span>}
+              </div>
             </div>
           ))}
         </div>
