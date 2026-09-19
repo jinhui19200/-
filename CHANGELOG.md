@@ -5,6 +5,13 @@
 
 ## 2026-09-19
 
+### 浏览器预览工具
+
+- 新增 `preview/mock.ts`：内存版数据后端，复刻主进程 store 语义（名称归一化、单位锁定、负库存警告、撤销反向冲销）
+- 新增 `preview/build-preview.mjs`：注入内存后端并起本地静态服务，只生成 `index.html` + `mock-api.js` 两个文件，资源相对路径指回 `out/renderer`，不复制构建产物
+- 新增 `预览界面.command`：双击即可在浏览器里看界面（数据不落盘，刷新即重置）
+- 用途：不启动 Electron 也能验证界面与交互
+
 ### 应用图标与界面修正
 
 - 新增应用图标（等距纸箱）：`build/icon.png`（1024×1024）+ `build/icon.svg` 源文件
