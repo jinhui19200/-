@@ -18,6 +18,26 @@
 #  查当前凭据有哪些 scope（不用 gh）：
 #    TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
 #    curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i x-oauth-scopes
+#
+#  ⚠️ 为什么 `build:mac` / `build:win` 里带了 `--publish never`：
+#     electron-builder 检测到「在 tag 上跑」会**自动去发 GitHub Release**，
+#     没有 GH_TOKEN 就报错退出 —— 而那时安装包其实已经打好了，纯粹白挂。
+#     实测（run #3 / v1.2.0）：两个 DMG 与 exe **都成功产出**，最后倒在
+#       ⨯ GitHub Personal Access Token is not set, neither programmatically, nor using env "GH_TOKEN"
+#     所以把「构建」和「发布」拆开：构建永不发布；要发 Release 就单独加一步。
+#
+#  可选升级 —— 让 tag 构建顺带发 Release（要改工作流，改完仍走网页粘贴）：
+#     1) 文件顶部（`on:` 之前）加：
+#          permissions:
+#            contents: write
+#     2) build-mac / build-win 的 upload-artifact 之后各加一步：
+#          - name: 发 Release
+#            env:
+#              GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#            run: gh release create "$GITHUB_REF_NAME" --generate-notes dist/*.dmg
+#        （Windows 那份把 dist/*.dmg 换成 dist/*.exe）
+#     注意：这样发 Release 靠的是工作流里的 gh，**不是** electron-builder 的隐式发布，
+#     所以 package.json 里的 `--publish never` 要保留。
 # ──────────────────────────────────────────────────────────────────────
 
 name: Build
