@@ -74,13 +74,16 @@ Grid 定义「入库区 / 零轴 / 出库区 / 月份标签」四行 + 「刻度
 
 ### 打包 v1.0.0：macOS（arm64 + x64 DMG）+ Windows（NSIS）
 
-产物（均在 `dist/`）：
+产物（均在 `dist/`，**已含「报表」页**）：
 
 | 文件 | 体积 | SHA256（前 16 位） |
 | --- | --- | --- |
-| `warehouse-manager-1.0.0-arm64.dmg` | 137 MB | `ad4e4baadec0a69e` |
-| `warehouse-manager-1.0.0-x64.dmg` | 145 MB | `8fa81da1eb0d30a0` |
-| `warehouse-manager-1.0.0-setup.exe` | 108 MB | `f287ba3f2199e9ed` |
+| `warehouse-manager-1.0.0-arm64.dmg` | 139 MB | `b25c3ad9e4391284` |
+| `warehouse-manager-1.0.0-x64.dmg` | 147 MB | `cdeec12b20085086` |
+| `warehouse-manager-1.0.0-setup.exe` | 109 MB | `c6b095d49fa9d320` |
+
+> 首轮打包（137/145/108 MB）不含报表页，已在新增报表页后重新打包覆盖，上表为当前产物。
+> 版本号保持 `1.0.0` —— 按「更新在现在所有版本中」的要求，不额外升版本。
 
 **修了一处会让安装包「打不开」的配置问题**
 
@@ -105,6 +108,10 @@ Grid 定义「入库区 / 零轴 / 出库区 / 月份标签」四行 + 「刻度
 - 改成 `.app` 先用 `electron-builder --mac --dir` 产出（含签名），
   再用 `hdiutil create -srcfolder` 直接生成 DMG（不挂载卷），
   卷内布局：`库存管理系统.app` + 指向 `/Applications` 的软链接
+- 往暂存目录放 `.app` **必须用 `ditto`，不能用 `cp -R`**：`.app` 被签名后文件上带了
+  `com.apple.cs.*` 扩展属性，`cp -R` 复制它们会被拒绝（`app.asar: Operation not permitted`），
+  而且这个失败**是静默的** —— 复制不完整，DMG 却照样生成成功。
+  已在打包脚本里加了体积与签名两道校验卡住它
 - Windows 包**不需要 Wine**：electron-builder 26 会自己下载 NSIS 3.0.4.1.7
   在 macOS 上直接出 `.exe`，实测 56 秒完成
 
