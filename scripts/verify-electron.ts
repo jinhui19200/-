@@ -1,0 +1,431 @@
+/**
+ * 端到端自检：真实 Electron + 真实 preload + 真实 IPC + 真实磁盘。
+ *
+ * 为什么需要它（另外两个脚本都覆盖不到这条链路）：
+ *   - 浏览器预览版（preview/）验证的是「界面 + mock 后端」，链路里没有 IPC；
+ *   - verify:store 验证的是「数据层」，链路里没有渲染进程和 preload。
+ *   「渲染进程 → contextBridge → IPC → 主进程 → 磁盘 → 再读回渲染进程」
+ *   只有真的把 Electron 跑起来才能验。本脚本用**隐藏窗口**跑通它，
+ *   不需要可见 GUI，因此可以无人值守执行。
+ *
+ * 数据全部写在临时 userData 目录，绝不触碰真实应用数据。
+ *
+ * 运行：npm run verify:electron
+ * 退出码：0 全部通过 / 1 有失败项
+ */
+import { app, BrowserWindow, dialog } from 'electron'
+import { mkdtempSync } from 'node:fs'
+import { readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { DB, TransactionResult, DeleteRecordResult } from '@shared/types'
+import { registerIpcHandlers } from '../src/main/ipc'
+import { getDataFilePath, getLoadReport, initStore, load } from '../src/main/store/db'
+
+let passed = 0
+let failed = 0
+const failures: string[] = []
+
+function check(label: string, condition: boolean, detail = ''): void {
+  if (condition) {
+    passed++
+    console.log(`  \u2713 ${label}`)
+  } else {
+    failed++
+    failures.push(label + (detail ? ` \u2014 ${detail}` : ''))
+    console.log(`  \u2717 ${label}${detail ? ` \u2014 ${detail}` : ''}`)
+  }
+}
+
+function section(title: string): void {
+  console.log(`\n${title}`)
+}
+
+/** 临时 userData —— 必须在 app ready 之前设置 */
+const dataDir = mkdtempSync(join(tmpdir(), 'wh-electron-test-'))
+app.setPath('userData', dataDir)
+
+// 无头/受限环境下 Chromium 的子进程沙箱和 GPU 进程起不来
+// （GPU 进程会以 exit_code=6 反复崩溃，最终 FATAL 拖垮整个进程）。
+// 本脚本只做数据链路验证，不渲染像素，因此关掉硬件加速与子进程沙箱。
+// 这些开关必须在 app ready 之前设置。
+app.disableHardwareAcceleration()
+app.commandLine.appendSwitch('no-sandbox')
+app.commandLine.appendSwitch('disable-gpu')
+app.commandLine.appendSwitch('disable-gpu-sandbox')
+app.commandLine.appendSwitch('disable-software-rasterizer')
+app.commandLine.appendSwitch('disable-dev-shm-usage')
+
+const dataFile = join(dataDir, 'data.json')
+const bakFile = `${dataFile}.bak`
+const exportFile = join(dataDir, 'export-probe.xlsx')
+
+const rendererErrors: string[] = []
+let win: BrowserWindow | null = null
+
+function makeWindow(): BrowserWindow {
+  const w = new BrowserWindow({
+    width: 1180,
+    height: 800,
+    show: false, // 隐藏：无需 GUI 也能跑
+    webPreferences: {
+      preload: join(__dirname, 'preload/index.js'),
+      sandbox: false
+    }
+  })
+  // Electron 新版把 console 信息包在 details 对象里，旧版是位置参数 —— 两种都兼容，
+  // 免得升级 Electron 时这段静默失效（静默失效比报错更糟：会假装「零错误」）
+  const wc = w.webContents as unknown as {
+    on: (ev: string, cb: (...args: unknown[]) => void) => void
+  }
+  wc.on('console-message', (...args: unknown[]) => {
+    const second = args[1] as { level?: string; message?: string } | number
+    let level: string
+    let message: string
+    if (second && typeof second === 'object') {
+      level = String(second.level ?? '')
+      message = String(second.message ?? '')
+    } else {
+      level = Number(second) >= 3 ? 'error' : Number(second) >= 2 ? 'warning' : 'info'
+      message = String(args[2] ?? '')
+    }
+    if (level === 'error') rendererErrors.push(message)
+  })
+  wc.on('render-process-gone', (...args: unknown[]) => {
+    const details = args[1] as { reason?: string }
+    rendererErrors.push(`render-process-gone: ${details?.reason ?? '未知'}`)
+  })
+  return w
+}
+
+function evalIn<T>(w: BrowserWindow, expr: string): Promise<T> {
+  return w.webContents.executeJavaScript(expr, true) as Promise<T>
+}
+
+async function waitFor(fn: () => Promise<boolean>, timeoutMs = 10000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      if (await fn()) return true
+    } catch {
+      /* 页面还没就绪，继续等 */
+    }
+    if (Date.now() > deadline) return false
+    await new Promise((r) => setTimeout(r, 80))
+  }
+}
+
+/** 起窗口 → 载入真实构建产物 → 等 preload 注入 → 等 React 挂载 */
+async function openWindow(): Promise<BrowserWindow> {
+  const w = makeWindow()
+  await w.loadFile(join(__dirname, 'renderer/index.html'))
+  const injected = await waitFor(() => evalIn<boolean>(w, 'typeof window.api === "object"'))
+  if (!injected) throw new Error('preload 未注入 window.api')
+  const mounted = await waitFor(() =>
+    evalIn<boolean>(w, '(document.querySelector("#root")?.childElementCount ?? 0) > 0')
+  )
+  if (!mounted) throw new Error('React 未挂载')
+  return w
+}
+
+/** 仓库页第一行的各单元格文本（名称 / 数量 / 单位 / 本月入 / 本月出） */
+function firstRowCells(w: BrowserWindow): Promise<string[]> {
+  return evalIn<string[]>(
+    w,
+    `(() => {
+       const tr = document.querySelector("tbody tr")
+       if (!tr) return []
+       return [...tr.querySelectorAll("td")].map(td => td.textContent ?? "")
+     })()`
+  )
+}
+
+/** 数量单元格是否带负库存高亮 */
+function quantityIsNegative(w: BrowserWindow): Promise<boolean> {
+  return evalIn<boolean>(w, 'Boolean(document.querySelector("tbody tr td.num.negative"))')
+}
+
+async function readJSON(path: string): Promise<DB> {
+  return JSON.parse(await readFile(path, 'utf8')) as DB
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await readFile(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const TX = (o: Record<string, unknown>): string => `window.api.applyTransaction(${JSON.stringify(o)})`
+
+async function run(): Promise<void> {
+  // ── 1. 冷启动 ────────────────────────────────────────────────
+  section('1. 冷启动：真实主进程加载数据')
+  initStore(app.getPath('userData'))
+  let loadErr: string | null = null
+  try {
+    await load()
+  } catch (e) {
+    loadErr = e instanceof Error ? e.message : String(e)
+  }
+  check('首次启动 load() 不抛异常', loadErr === null, loadErr ?? '')
+  check('首次启动未标记「已从备份恢复」', getLoadReport().recoveredFromBackup === false)
+  check('数据文件落在临时 userData 内', getDataFilePath() === dataFile, getDataFilePath())
+  check('首次启动时数据文件尚不存在', (await fileExists(dataFile)) === false)
+
+  registerIpcHandlers()
+
+  // 导出要弹保存对话框，会把自动化卡住 —— 换成固定路径才能验
+  ;(dialog as unknown as { showSaveDialog: unknown }).showSaveDialog = async (): Promise<{
+    filePath: string
+    canceled: boolean
+  }> => ({ filePath: exportFile, canceled: false })
+
+  // ── 2. 桥接 ──────────────────────────────────────────────────
+  section('2. 真实窗口：contextBridge + IPC 往返')
+  win = await openWindow()
+  const pong = await evalIn<string>(win, 'window.api.ping()')
+  check('IPC 往返 ping → pong', pong === 'pong', `实际 ${pong}`)
+  const dataPathFromPage = await evalIn<string>(win, 'window.api.getDataPath()')
+  check('界面拿到的数据路径与主进程一致', dataPathFromPage === dataFile, dataPathFromPage)
+
+  const headerBtns = await evalIn<string>(
+    win,
+    '[...document.querySelectorAll("header button")].map(b => b.textContent || "").join("|")'
+  )
+  check('头部「打开数据文件夹」按钮已渲染', headerBtns.includes('打开数据文件夹'), headerBtns)
+
+  const bridgeOk = await waitFor(async () =>
+    (await evalIn<string>(win!, 'document.querySelector(".bridge-status")?.textContent ?? ""')).includes(
+      '主进程通道正常'
+    )
+  )
+  check('界面状态显示「主进程通道正常」', bridgeOk)
+
+  // ── 3. 从界面提交 → 落盘 ─────────────────────────────────────
+  // 本脚本的账目（后续断言都按这张表推）：
+  //   #1 入库 100        → 100
+  //   #2 入库  50（单位填「箱」，应被锁为「个」）→ 150
+  //   #3 出库 200        → -50   （负库存，仅警告）
+  //   #4 入库  10        → -40
+  //   #5 入库   5        → -35
+  //   #6 撤销 #3         → 165
+  section('3. 经 IPC 提交入库 → 真实落盘')
+  const t1 = await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-19T10:00', name: 'M3×8 螺丝', quantity: 100, unit: '个', operator: '张三', type: 'in' })
+  )
+  check('入库返回 ok', t1.ok === true, t1.ok ? '' : t1.error)
+  check('库存 = 100', t1.ok && t1.item.quantity === 100, t1.ok ? `${t1.item.quantity}` : '')
+  check('操作人快照 = 张三', t1.ok && t1.record.operator === '张三')
+  check('data.json 已写入磁盘', await fileExists(dataFile))
+  const onDisk1 = await readJSON(dataFile)
+  check('磁盘上记录数 = 1', onDisk1.records.length === 1, `${onDisk1.records.length}`)
+  check('磁盘上物品数 = 1', onDisk1.items.length === 1, `${onDisk1.items.length}`)
+
+  // ── 4. 单位锁定 ──────────────────────────────────────────────
+  section('4. 单位锁定经 IPC 生效')
+  const t2 = await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-19T11:00', name: 'M3×8 螺丝', quantity: 50, unit: '箱', operator: '李四', type: 'in' })
+  )
+  check('第二笔入库 ok', t2.ok === true, t2.ok ? '' : t2.error)
+  check('单位被锁定为「个」而非「箱」', t2.ok && t2.item.unit === '个', t2.ok ? t2.item.unit : '')
+  check('库存累加到 150', t2.ok && t2.item.quantity === 150, t2.ok ? `${t2.item.quantity}` : '')
+
+  // ── 5. 负库存警告 ────────────────────────────────────────────
+  section('5. 负库存只警告不阻断')
+  const t3 = await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-19T12:00', name: 'M3×8 螺丝', quantity: 200, unit: '个', operator: '王五', type: 'out' })
+  )
+  check('出库 200 仍成功', t3.ok === true, t3.ok ? '' : t3.error)
+  check('库存变为 -50', t3.ok && t3.item.quantity === -50, t3.ok ? `${t3.item.quantity}` : '')
+  check('返回了负库存提示', t3.ok && Boolean(t3.warning), t3.ok ? String(t3.warning) : '')
+
+  // ── 6. 变更广播 ──────────────────────────────────────────────
+  section('6. 数据变更广播到渲染进程')
+  await evalIn<void>(
+    win,
+    `(() => { window.__chg = 0; window.__sub = window.api.onChanged(() => { window.__chg++ }) })()`
+  )
+  await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-19T13:00', name: 'M3×8 螺丝', quantity: 10, unit: '个', type: 'in' })
+  )
+  await new Promise((r) => setTimeout(r, 250))
+  const chgAfter = await evalIn<number>(win, 'window.__chg')
+  check('提交后订阅者收到变更通知', chgAfter >= 1, `收到 ${chgAfter} 次`)
+
+  await evalIn<void>(win, '(() => { window.api.offChanged(window.__sub); window.__chg = 0 })()')
+  await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-19T14:00', name: 'M3×8 螺丝', quantity: 5, unit: '个', type: 'in' })
+  )
+  await new Promise((r) => setTimeout(r, 250))
+  const chgAfterOff = await evalIn<number>(win, 'window.__chg')
+  check('取消订阅后不再收到通知', chgAfterOff === 0, `收到 ${chgAfterOff} 次`)
+
+  // ── 7. 界面随广播自动刷新 ────────────────────────────────────
+  section('7. 界面自动刷新（无需手动切页）')
+  const rowReady = await waitFor(async () => (await firstRowCells(win!))[0] === 'M3×8 螺丝')
+  check('仓库页自动出现该物品', rowReady)
+  const cells = await firstRowCells(win)
+  check('数量单元格 = -35', cells[1] === '-35', cells[1] ?? '(无)')
+  check('单位单元格 = 个（单位锁定生效）', cells[2] === '个', cells[2] ?? '(无)')
+  check('本月入库 = +165', cells[3] === '+165', cells[3] ?? '(无)')
+  check('本月出库 = -200', cells[4] === '-200', cells[4] ?? '(无)')
+  check('负库存带高亮类名', await quantityIsNegative(win))
+
+  // ── 8. 撤销反向冲销 ──────────────────────────────────────────
+  section('8. 撤销经 IPC 反向冲销')
+  const snapBefore = await evalIn<DB>(win, 'window.api.getSnapshot()')
+  const outRec = snapBefore.records.find((r) => r.type === 'out')
+  check('找到那笔出库记录', Boolean(outRec))
+  const del = await evalIn<DeleteRecordResult>(win, `window.api.deleteRecord(${JSON.stringify(outRec?.id ?? '')})`)
+  check('撤销返回 ok', del.ok === true, del.ok ? '' : del.error)
+  check('库存回到 165（-35 + 200）', del.ok && del.item?.quantity === 165, del.ok ? `${del.item?.quantity}` : '')
+  const onDiskAfterUndo = await readJSON(dataFile)
+  check('磁盘上该记录已移除', onDiskAfterUndo.records.every((r) => r.id !== outRec?.id))
+  const uiAfterUndo = await waitFor(async () => (await firstRowCells(win!))[1] === '165')
+  check('界面同步显示 165', uiAfterUndo, (await firstRowCells(win))[1] ?? '(无)')
+  check('负库存高亮随之消失', (await quantityIsNegative(win)) === false)
+
+  // ── 9. 导出 ──────────────────────────────────────────────────
+  section('9. 导出 Excel 经 IPC 由主进程写盘')
+  const exp = await evalIn<{ ok: boolean; path?: string }>(
+    win,
+    `window.api.exportXlsx([80, 75, 3, 4], "库存导出.xlsx")`
+  )
+  check('导出返回 ok', exp.ok === true)
+  check('主进程确实写出了文件', await fileExists(exportFile))
+  const bytes = await readFile(exportFile)
+  check('写入内容与传入字节一致', bytes.length === 4 && bytes[0] === 80 && bytes[3] === 4)
+
+  ;(dialog as unknown as { showSaveDialog: unknown }).showSaveDialog = async (): Promise<{
+    filePath: undefined
+    canceled: boolean
+  }> => ({ filePath: undefined, canceled: true })
+  const expCancel = await evalIn<{ ok: boolean; cancelled?: boolean }>(
+    win,
+    `window.api.exportXlsx([1], "x.xlsx")`
+  )
+  check('用户取消保存时返回 cancelled', expCancel.ok === false && expCancel.cancelled === true)
+
+  // ── 10. 模拟重启 ─────────────────────────────────────────────
+  section('10. 模拟重启：数据从磁盘读回')
+  win.destroy()
+  win = null
+  initStore(dataDir) // 清空内存缓存，强制走磁盘
+  await load()
+  check('重启后未标记「已从备份恢复」', getLoadReport().recoveredFromBackup === false)
+  const reloaded = await readJSON(dataFile)
+  check('磁盘记录数 = 4（5 笔中撤销掉 1 笔）', reloaded.records.length === 4, `${reloaded.records.length}`)
+  check('磁盘库存 = 165', reloaded.items[0]?.quantity === 165, `${reloaded.items[0]?.quantity}`)
+
+  win = await openWindow()
+  const persisted = await waitFor(async () => (await firstRowCells(win!))[1] === '165')
+  check('重启后界面显示持久化的 165', persisted, (await firstRowCells(win))[1] ?? '(无)')
+  const persistedRows = await evalIn<number>(win, 'document.querySelectorAll("tbody tr").length')
+  check('重启后界面只有 1 行物品', persistedRows === 1, `${persistedRows}`)
+  const noBanner = await evalIn<boolean>(win, '!document.querySelector(".warn-banner")')
+  check('正常启动不显示恢复提示条', noBanner)
+
+  // ── 11. 损坏恢复 ─────────────────────────────────────────────
+  section('11. 主文件损坏 → 从备份恢复（真实启动路径）')
+  const goodBak = await readFile(bakFile, 'utf8')
+  await writeFile(dataFile, '这不是 JSON { 坏掉了')
+  win.destroy()
+  win = null
+  initStore(dataDir)
+  let recoverErr: string | null = null
+  try {
+    await load()
+  } catch (e) {
+    recoverErr = e instanceof Error ? e.message : String(e)
+  }
+  check('恢复成功时 load() 不抛异常（原缺陷会让应用起不来）', recoverErr === null, recoverErr ?? '')
+  check('loadReport 标记「已从备份恢复」', getLoadReport().recoveredFromBackup === true)
+
+  const restoredRaw = await readFile(dataFile, 'utf8')
+  let restoredValid = false
+  try {
+    JSON.parse(restoredRaw)
+    restoredValid = true
+  } catch {
+    /* 保持 false */
+  }
+  check('恢复后 data.json 是合法 JSON', restoredValid)
+  const bakAfter = await readFile(bakFile, 'utf8')
+  check('好备份未被损坏的主文件覆盖（原缺陷会毁掉备份）', bakAfter === goodBak)
+  const restored = await readJSON(dataFile)
+  check('恢复后记录数 = 5（备份是撤销前的状态）', restored.records.length === 5, `${restored.records.length}`)
+  check('恢复后库存 = -35，确实回退了最后一次操作', restored.items[0]?.quantity === -35, `${restored.items[0]?.quantity}`)
+  check('恢复后那笔已撤销的出库又回来了', restored.records.some((r) => r.type === 'out'))
+
+  win = await openWindow()
+  const bannerShown = await waitFor(() => evalIn<boolean>(win!, 'Boolean(document.querySelector(".warn-banner"))'))
+  check('界面显示「已从备份恢复」提示条', bannerShown)
+  const bannerText = await evalIn<string>(win, 'document.querySelector(".warn-banner")?.textContent ?? ""')
+  check('提示条文案说明了风险', bannerText.includes('可能丢失最后一次操作'), bannerText.replace(/\s+/g, ' ').trim())
+  const recoveredQty = await waitFor(async () => (await firstRowCells(win!))[1] === '-35')
+  check('界面显示的是恢复后的 -35', recoveredQty, (await firstRowCells(win))[1] ?? '(无)')
+
+  // ── 12. 主文件与备份都坏 ─────────────────────────────────────
+  section('12. 主文件与备份都不可用 → 明确报错而非静默空库')
+  win.destroy()
+  win = null
+  await writeFile(dataFile, '坏掉了')
+  await writeFile(bakFile, '也坏掉了')
+  initStore(dataDir)
+  let bothErr = ''
+  try {
+    await load()
+  } catch (e) {
+    bothErr = e instanceof Error ? e.message : String(e)
+  }
+  check('确实抛出了错误', bothErr !== '')
+  check('错误信息说明是数据文件损坏', bothErr.includes('数据文件损坏'), bothErr.replace(/\s+/g, ' ').slice(0, 80))
+  check('错误信息给出了两个路径', bothErr.includes(dataFile) && bothErr.includes(bakFile))
+
+  // ── 13. 控制台 ───────────────────────────────────────────────
+  section('13. 渲染进程控制台')
+  check('无 console.error', rendererErrors.length === 0, rendererErrors.slice(0, 3).join(' | '))
+
+  console.log(`\n${'─'.repeat(56)}`)
+  console.log(`通过 ${passed} 项，失败 ${failed} 项`)
+  if (failures.length) {
+    console.log('\n失败明细：')
+    for (const f of failures) console.log(`  \u2717 ${f}`)
+  }
+  console.log(`临时数据目录：${dataDir}`)
+}
+
+const bail = setTimeout(() => {
+  console.error('\n自检超时（120 秒），强制退出')
+  app.exit(1)
+}, 120000)
+
+app.whenReady().then(async () => {
+  let code = 1
+  try {
+    await run()
+    code = failed === 0 ? 0 : 1
+  } catch (err) {
+    console.error('\n自检中断：', err)
+    code = 1
+  }
+  clearTimeout(bail)
+  try {
+    await rm(dataDir, { recursive: true, force: true })
+  } catch {
+    /* 清理失败不影响结论 */
+  }
+  app.exit(code)
+})
+
+app.on('window-all-closed', () => {
+  /* 由 run() 控制退出时机，这里不自动退出 */
+})
