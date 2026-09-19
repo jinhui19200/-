@@ -1,25 +1,21 @@
 # ──────────────────────────────────────────────────────────────────────
-#  安装说明（这段不要粘贴 —— 粘贴请从下面的 `name: Build` 开始）
+#  状态：**已安装**（2026-09-20）—— 仓库里已有 `.github/workflows/build.yml`。
+#        安装时漏了首行 `name: Build`（其余 76 行逐行一致）。YAML 里 `name` 是可选的，
+#        不影响运行，只是 Actions 页面显示成文件名 `build.yml` 而不是 `Build`。
 #
-#  ⚠️ 推送 `.github/workflows/` 下的文件，需要 token 具备 `workflow` scope。
-#     本机凭据实测只有 `gist, read:org, repo`，缺这一项，GitHub 会**直接拒收整个 push**。
-#     所以这个文件当前待在 ci/ 下，两条安装路径：
+#  ⚠️ 以后改这个工作流，**别直接改 `.github/workflows/build.yml` 再推** ——
+#     本机 token 只有 `gist, read:org, repo`，缺 `workflow` scope，GitHub 会拒收整个 push。
+#     正确姿势是改 `ci/` 这份，然后二选一：
+#       A. 网页编辑 .github/workflows/build.yml（把 `name:` 往下整份替换）
+#       B. 先补 scope（gh 装着但不在 PATH 上，用全路径）：
+#            GH="/Users/hui/Documents/New project/.tools/gh/gh_2.94.0_macOS_arm64/bin/gh"
+#            "$GH" auth refresh -s workflow
+#          补上之后就能直接改 `.github/workflows/build.yml` 了，这份 ci/ 副本即可删除。
 #
-#    A. 网页（推荐：不碰凭据，一分钟）
-#       打开 https://github.com/jinhui19200/-/new/main?filename=.github/workflows/build.yml
-#       把 `name: Build` 往下全部内容粘进去，提交。
+#  注意区分：仓库里**存在** workflow 文件，并不妨碍其他文件的推送 ——
+#    只要这次 push 的提交没有改动 `.github/workflows/` 下的内容，`repo` scope 就够。
 #
-#    B. 补 scope 后从命令行装
-#       gh 装着但不在 PATH 上，用全路径：
-#         GH="/Users/hui/Documents/New project/.tools/gh/gh_2.94.0_macOS_arm64/bin/gh"
-#         "$GH" auth refresh -s workflow
-#         mkdir -p .github/workflows
-#         git mv ci/github-actions-build.yml .github/workflows/build.yml
-#         git commit -m "装 CI 工作流" && git push
-#
-#  装好之后两处内容应保持一致，改一处记得同步另一处。
-#
-#  想查当前凭据有哪些 scope（不用 gh）：
+#  查当前凭据有哪些 scope（不用 gh）：
 #    TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
 #    curl -sI -H "Authorization: token $TOKEN" https://api.github.com/user | grep -i x-oauth-scopes
 # ──────────────────────────────────────────────────────────────────────
