@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { DB, DeleteRecordResult, TransactionInput, TransactionResult } from '@shared/types'
+import type {
+  DB,
+  DeleteRecordResult,
+  SetThresholdResult,
+  TransactionInput,
+  TransactionResult
+} from '@shared/types'
 
 const EMPTY_DB: DB = { version: 1, items: [], records: [] }
 
@@ -14,6 +20,7 @@ export interface AppData {
   refresh: () => Promise<void>
   applyTransaction: (input: TransactionInput) => Promise<TransactionResult>
   deleteRecord: (id: string) => Promise<DeleteRecordResult>
+  setItemThreshold: (id: string, threshold: number) => Promise<SetThresholdResult>
   exportXlsx: (data: number[], defaultName: string) => Promise<{
     ok: boolean
     path?: string
@@ -53,6 +60,15 @@ export function useAppData(): AppData {
   const deleteRecord = useCallback(
     async (id: string): Promise<DeleteRecordResult> => {
       const result = await window.api.deleteRecord(id)
+      if (result.ok) await refresh()
+      return result
+    },
+    [refresh]
+  )
+
+  const setItemThreshold = useCallback(
+    async (id: string, threshold: number): Promise<SetThresholdResult> => {
+      const result = await window.api.setItemThreshold(id, threshold)
       if (result.ok) await refresh()
       return result
     },
@@ -127,6 +143,7 @@ export function useAppData(): AppData {
     refresh,
     applyTransaction,
     deleteRecord,
+    setItemThreshold,
     exportXlsx,
     openDataFolder
   }

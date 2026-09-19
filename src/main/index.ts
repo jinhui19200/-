@@ -1,8 +1,27 @@
 import { app, shell, BrowserWindow, dialog } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { registerIpcHandlers } from './ipc'
 import { initStore, load } from './store/db'
+
+/**
+ * 开发模式下 Dock 显示的是 Electron 自带的图标，一眼看不出是哪个应用。
+ * 打包后用的是 .app 里由 `build/icon.png` 生成的图标，不需要这段。
+ *
+ * 路径里的 `../../build` 只在源码目录下成立；打包后 build/ 不进包，
+ * 所以加了 existsSync 兜底，缺失时静默跳过，绝不能让图标问题拖垮启动。
+ */
+function applyDevDockIcon(): void {
+  if (!is.dev || process.platform !== 'darwin') return
+  const iconPath = join(__dirname, '../../build/icon.png')
+  if (!existsSync(iconPath)) return
+  try {
+    app.dock?.setIcon(iconPath)
+  } catch {
+    /* 图标是可选项，失败就算了 */
+  }
+}
 
 function createWindow(): void {
   const mainWindow = new BrowserWindow({
@@ -51,6 +70,7 @@ if (!gotTheLock) {
 
   app.whenReady().then(async () => {
     electronApp.setAppUserModelId('com.jinhui.warehouse-manager')
+    applyDevDockIcon()
 
     // 先定位数据文件并加载完成，再开窗口 —— 保证渲染进程一启动就能拿到数据，
     // 不会出现「界面已渲染、数据还没到位」的空窗期

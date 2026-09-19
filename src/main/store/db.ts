@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { DB } from '@shared/types'
+import { normalizeThreshold } from '@shared/utils'
 
 /**
  * 数据文件的读写。
@@ -70,9 +71,18 @@ function parseDB(raw: string): DB {
         operator: (r as { operator?: string }).operator ?? ''
       }))
     : []
+  // 旧数据文件里没有 threshold 字段（这个功能是后加的）。
+  // 在这里补齐，而不是让每个读取方自己判断 undefined ——
+  // 补齐点只有一处，界面和数据层就不可能对同一个物品算出不同的警戒状态。
+  const items = Array.isArray(parsed.items)
+    ? parsed.items.map((i) => ({
+        ...i,
+        threshold: normalizeThreshold((i as { threshold?: unknown }).threshold)
+      }))
+    : []
   return {
     version: 1,
-    items: Array.isArray(parsed.items) ? parsed.items : [],
+    items,
     records
   }
 }

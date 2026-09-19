@@ -10,6 +10,12 @@ export interface Item {
   unit: string
   /** 当前库存。允许为负（出库超过库存时只警告不阻断） */
   quantity: number
+  /**
+   * 库存警戒值。当前库存**低于**它时，仓库页把数量标成浅红。
+   * 默认 {@link DEFAULT_THRESHOLD}（100）；旧数据文件没有这个字段，
+   * 加载时由数据层补齐，不需要用户手动迁移。
+   */
+  threshold: number
   createdAt: string
   updatedAt: string
 }
@@ -67,3 +73,6 @@ export type TransactionResult =
 export type DeleteRecordResult =
   | { ok: true; removed: StockRecord; item: Item | null; warning?: string }
   | { ok: false; error: string }
+
+/** 修改物品警戒值 */
+export type SetThresholdResult = { ok: true; item: Item } | { ok: false; error: string }

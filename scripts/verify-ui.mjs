@@ -229,7 +229,9 @@ async function run(page, shot) {
   let tables = await page.evaluate(MEASURE_TABLE)
   check('页面上有且只有一个表格', tables.length === 1, `${tables.length}`)
   let cols = tables[0]
-  const numeric = cols.filter((c) => c.head === '数量' || c.head.startsWith('本月'))
+  const numeric = cols.filter(
+    (c) => c.head === '数量' || c.head === '警戒值' || c.head.startsWith('本月')
+  )
   check(
     '数值列表头右对齐（历史缺陷：被 .table th 的选择器权重压成左对齐）',
     numeric.every((c) => c.rightAligned),
@@ -249,6 +251,171 @@ async function run(page, shot) {
     cols.map((c) => `${c.head}:${c.thBorderRight}/${c.tdBorderRight}`).join(' ')
   )
   check('末列不画右边框（避免与卡片边框叠成双线）', cols[cols.length - 1].thBorderRight === 0)
+
+  // ── 2b. 警戒值 ───────────────────────────────────────────
+  section('2b. 仓库页：警戒值')
+
+  /** 仓库页某物品「数量」单元格的样式与文本 */
+  const qtyCell = (page, name) =>
+    page.evaluate((n) => {
+      const tr = [...document.querySelectorAll('tbody tr')].find(
+        (r) => r.querySelector('td')?.textContent?.trim() === n
+      )
+      if (!tr) return null
+      const td = tr.querySelectorAll('td')[1]
+      const cs = getComputedStyle(td)
+      return {
+        text: td.textContent.trim(),
+        bg: cs.backgroundColor,
+        color: cs.color,
+        weight: cs.fontWeight,
+        low: td.classList.contains('below-threshold'),
+        negative: td.classList.contains('negative')
+      }
+    }, name)
+
+  const thresholdValue = (page, name) =>
+    page.evaluate((n) => {
+      const tr = [...document.querySelectorAll('tbody tr')].find(
+        (r) => r.querySelector('td')?.textContent?.trim() === n
+      )
+      return tr ? tr.querySelector('.threshold-input').value : null
+    }, name)
+
+  /** 改警戒值：走真实输入 + 失焦（提交发生在 onBlur） */
+  const setThreshold = async (page, name, value) => {
+    await page.evaluate(
+      ([n, v]) => {
+        const tr = [...document.querySelectorAll('tbody tr')].find(
+          (r) => r.querySelector('td')?.textContent?.trim() === n
+        )
+        const input = tr.querySelector('.threshold-input')
+        input.focus()
+        const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+        set.call(input, String(v))
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        input.blur()
+      },
+      [name, value]
+    )
+    await page.waitForTimeout(350)
+  }
+
+  const lowRows = (page) =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('tbody tr')]
+        .filter((r) => r.querySelector('td.below-threshold'))
+        .map((r) => r.querySelector('td')?.textContent?.trim())
+    )
+
+  check(
+    '表头含「警戒值」列，且在「单位」之后',
+    cols.map((c) => c.head).join('|') === '名称|数量|单位|警戒值|本月入库（9月）|本月出库（9月）|操作',
+    cols.map((c) => c.head).join('|')
+  )
+  check('警戒值列是数值列（右对齐）', cols[3].rightAligned, cols[3].hAlign)
+
+  // 种子里的警戒值：螺丝 100 / 电阻 100 / 铜线 50 / 焊锡丝 10 / PCB 5
+  check('螺丝警戒值显示 100', (await thresholdValue(page, 'M3×8 螺丝')) === '100', await thresholdValue(page, 'M3×8 螺丝'))
+  check('铜线警戒值显示 50', (await thresholdValue(page, '铜线 1.5mm²')) === '50', await thresholdValue(page, '铜线 1.5mm²'))
+
+  // 种子状态：245/100 不低、80/100 低、-15/50 低、12/10 不低、0/5 低 → 3 种
+  const low0 = await lowRows(page)
+  check(
+    '低于警戒值的行共 3 种（电阻 / 铜线 / PCB）',
+    low0.length === 3,
+    low0.join('、')
+  )
+  check(
+    '螺丝 245 ≥ 100，不标红',
+    (await qtyCell(page, 'M3×8 螺丝')).low === false
+  )
+  const dianceCell = await qtyCell(page, '贴片电阻 10kΩ')
+  check('电阻 80 < 100，数量单元格标红', dianceCell.low === true)
+  check(
+    '标红单元格底色是浅红',
+    dianceCell.bg === 'rgb(253, 236, 235)',
+    dianceCell.bg
+  )
+  check(
+    '标红单元格数字加粗',
+    Number(dianceCell.weight) >= 600,
+    dianceCell.weight
+  )
+  const copperCell = await qtyCell(page, '铜线 1.5mm²')
+  check(
+    '负库存同时带 negative 与 below-threshold 两个类',
+    copperCell.negative === true && copperCell.low === true,
+    `negative=${copperCell.negative} low=${copperCell.low}`
+  )
+  check(
+    '顶部显示「3 种低于警戒值」',
+    (await page.evaluate(() => document.querySelector('.count-warn')?.textContent?.trim() ?? '')).includes('3 种低于警戒值'),
+    await page.evaluate(() => document.querySelector('.count-warn')?.textContent?.trim() ?? '(无)')
+  )
+  await shot(page, '2b-threshold')
+
+  // 改警戒值：把螺丝从 100 提到 300 → 245 < 300，应立刻变红
+  await setThreshold(page, 'M3×8 螺丝', 300)
+  check('改警戒值后输入框显示 300', (await thresholdValue(page, 'M3×8 螺丝')) === '300', await thresholdValue(page, 'M3×8 螺丝'))
+  check('螺丝 245 < 300，数量变红', (await qtyCell(page, 'M3×8 螺丝')).low === true)
+  check('低于警戒值数量变为 4 种', (await lowRows(page)).length === 4, `${(await lowRows(page)).length}`)
+  await shot(page, '2b-threshold-changed')
+
+  // 调低回去：螺丝警戒值设 1 → 245 ≥ 1，红应消失
+  await setThreshold(page, 'M3×8 螺丝', 1)
+  check('警戒值调回 1 后螺丝不再标红', (await qtyCell(page, 'M3×8 螺丝')).low === false)
+  check('低于警戒值数量回到 3 种', (await lowRows(page)).length === 3, `${(await lowRows(page)).length}`)
+
+  // 非法输入：清空 → 失焦后回到「上一次生效的值」，不把空值写进数据。
+  // 这里刻意不做「清空 = 恢复默认 100」：用户清空多半是想取消这次修改，
+  // 静默把它改成 100 等于替用户改了数据。（数据层仍有 100 兜底，防直接调 IPC）
+  await setThreshold(page, 'M3×8 螺丝', '')
+  check(
+    '清空后失焦：回到上一次生效的值 1，不写空值',
+    (await thresholdValue(page, 'M3×8 螺丝')) === '1',
+    await thresholdValue(page, 'M3×8 螺丝')
+  )
+  check('清空没有改变低于警戒值的判定（245 ≥ 1）', (await qtyCell(page, 'M3×8 螺丝')).low === false)
+
+  // 负数输入同理：不写进数据，回到原值
+  await setThreshold(page, '焊锡丝 0.8mm', -3)
+  check(
+    '负数输入失焦后回到 10，不写负数',
+    (await thresholdValue(page, '焊锡丝 0.8mm')) === '10',
+    await thresholdValue(page, '焊锡丝 0.8mm')
+  )
+  check('焊锡丝 12 ≥ 10，不标红', (await qtyCell(page, '焊锡丝 0.8mm')).low === false)
+
+  // 非数字输入（type=number 在真实浏览器里会挡掉字母，用超长数值模拟非法）
+  await setThreshold(page, 'M3×8 螺丝', '1e999')
+  check(
+    '溢出数值（Infinity）失焦后回到原值',
+    (await thresholdValue(page, 'M3×8 螺丝')) === '1',
+    await thresholdValue(page, 'M3×8 螺丝')
+  )
+
+  // 恢复种子状态，避免影响后续用例
+  await setThreshold(page, 'M3×8 螺丝', 100)
+  check('螺丝警戒值恢复 100', (await thresholdValue(page, 'M3×8 螺丝')) === '100', await thresholdValue(page, 'M3×8 螺丝'))
+
+  // 改警戒值不该产生流水
+  const recordsAfterThreshold = await page.evaluate(async () => {
+    const snap = await window.api.getSnapshot()
+    return snap.records.length
+  })
+  check('改警戒值没有写进出库记录', recordsAfterThreshold === 9, `${recordsAfterThreshold}`)
+
+  // 数据层确实存下了新警戒值（不是只改了界面）
+  const persisted = await page.evaluate(async () => {
+    const snap = await window.api.getSnapshot()
+    return snap.items.map((i) => `${i.name}:${i.threshold}`).join(' ')
+  })
+  check(
+    '快照里警戒值与界面一致',
+    persisted.includes('M3×8 螺丝:100') && persisted.includes('铜线 1.5mm²:50'),
+    persisted
+  )
 
   // ── 3. 记录页布局 ────────────────────────────────────────
   section('3. 记录页：表头与数据一一对应')

@@ -9,11 +9,18 @@ import type {
   DB,
   DeleteRecordResult,
   Item,
+  SetThresholdResult,
   StockRecord,
   TransactionInput,
   TransactionResult
 } from '@shared/types'
-import { normalizeName, roundQuantity, toLocalDateTime } from '@shared/utils'
+import {
+  DEFAULT_THRESHOLD,
+  normalizeName,
+  normalizeThreshold,
+  roundQuantity,
+  toLocalDateTime
+} from '@shared/utils'
 
 const NOW = new Date().toISOString()
 
@@ -22,11 +29,13 @@ const nid = (p: string): string => `${p}${++uid}`
 
 function seed(): DB {
   const items: Item[] = [
-    { id: 'i1', name: 'M3×8 螺丝', unit: '个', quantity: 245, createdAt: NOW, updatedAt: NOW },
-    { id: 'i2', name: '贴片电阻 10kΩ', unit: '个', quantity: 80, createdAt: NOW, updatedAt: NOW },
-    { id: 'i3', name: '铜线 1.5mm²', unit: '米', quantity: -15, createdAt: NOW, updatedAt: NOW },
-    { id: 'i4', name: '焊锡丝 0.8mm', unit: '卷', quantity: 12, createdAt: NOW, updatedAt: NOW },
-    { id: 'i5', name: 'PCB 打样板', unit: '块', quantity: 0, createdAt: NOW, updatedAt: NOW }
+    // 刻意让几种状态都出现：高于警戒值、低于警戒值、负数、正好为 0。
+    // 注意别在这里加「排针」—— 界面自检的「新建物品」用例要靠它不存在才能跑通。
+    { id: 'i1', name: 'M3×8 螺丝', unit: '个', quantity: 245, threshold: 100, createdAt: NOW, updatedAt: NOW },
+    { id: 'i2', name: '贴片电阻 10kΩ', unit: '个', quantity: 80, threshold: 100, createdAt: NOW, updatedAt: NOW },
+    { id: 'i3', name: '铜线 1.5mm²', unit: '米', quantity: -15, threshold: 50, createdAt: NOW, updatedAt: NOW },
+    { id: 'i4', name: '焊锡丝 0.8mm', unit: '卷', quantity: 12, threshold: 10, createdAt: NOW, updatedAt: NOW },
+    { id: 'i5', name: 'PCB 打样板', unit: '块', quantity: 0, threshold: 5, createdAt: NOW, updatedAt: NOW }
   ]
   const mk = (
     itemId: string,
@@ -129,7 +138,15 @@ function applyTransaction(input: TransactionInput): TransactionResult {
   } else {
     unit = (input.unit ?? '').trim()
     if (!unit) return { ok: false, error: '新物品必须填写单位' }
-    item = { id: nid('i'), name, unit, quantity: 0, createdAt: stamp, updatedAt: stamp }
+    item = {
+      id: nid('i'),
+      name,
+      unit,
+      quantity: 0,
+      threshold: DEFAULT_THRESHOLD,
+      createdAt: stamp,
+      updatedAt: stamp
+    }
     next.items.push(item)
   }
 
@@ -192,12 +209,29 @@ function deleteRecord(id: string): DeleteRecordResult {
   }
 }
 
+function setItemThreshold(id: string, threshold: number): SetThresholdResult {
+  const item = db.items.find((i) => i.id === id)
+  if (!item) return { ok: false, error: '物品不存在，可能已被删除' }
+
+  const next = clone()
+  const target = next.items.find((i) => i.id === id) as Item
+  const value = normalizeThreshold(threshold)
+  if (target.threshold === value) return { ok: true, item: { ...target } }
+
+  target.threshold = value
+  db = next
+  notify()
+  return { ok: true, item: { ...target } }
+}
+
 const api = {
   ping: async (): Promise<string> => 'pong',
   getSnapshot: async (): Promise<DB> => clone(),
   applyTransaction: async (input: TransactionInput): Promise<TransactionResult> =>
     applyTransaction(input),
   deleteRecord: async (id: string): Promise<DeleteRecordResult> => deleteRecord(id),
+  setItemThreshold: async (id: string, threshold: number): Promise<SetThresholdResult> =>
+    setItemThreshold(id, threshold),
   exportXlsx: async (): Promise<{ ok: boolean; error?: string }> => ({
     ok: false,
     error: '演示模式不会真的写出文件；真实应用中这里会弹出保存对话框'

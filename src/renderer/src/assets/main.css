@@ -12,6 +12,10 @@
   --out-bg: #fdecea;
   --out-fg: #b3271e;
   --danger: #c0392b;
+  /* 低于警戒值：浅红底 + 红字 */
+  --warn-bg: #fdeceb;
+  --warn-fg: #c0392b;
+  --warn-row: #fff8f7;
 }
 
 * {
@@ -214,6 +218,71 @@ body {
 .negative {
   color: var(--danger);
   font-weight: 500;
+}
+
+/* ===== 低于警戒值 ===== */
+/*
+ * 只给「数量」这一个单元格上浅红底，而不是整行 ——
+ * 整行染红会让「本月入库/出库」那两个数字也一起变色，
+ * 看起来像它们也出了问题。红的是库存本身。
+ */
+.table td.below-threshold {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+  font-weight: 600;
+}
+
+/* 整行给一层极淡的底，让低库存的物品在长列表里一眼能扫到 */
+.table tbody tr.row-low td {
+  background: var(--warn-row);
+}
+
+.table tbody tr.row-low td.below-threshold {
+  background: var(--warn-bg);
+}
+
+.table tbody tr.row-low:hover td {
+  background: #fff3f1;
+}
+
+.table tbody tr.row-low:hover td.below-threshold {
+  background: #fbe0dd;
+}
+
+.count-warn {
+  color: var(--warn-fg);
+}
+
+/* 警戒值输入框：平时长得像纯文本，鼠标移上去/聚焦才显出可编辑 */
+.threshold-input {
+  appearance: textfield;
+  width: 74px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 3px 7px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: transparent;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.threshold-input::-webkit-outer-spin-button,
+.threshold-input::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.threshold-input:hover {
+  border-color: var(--border);
+}
+
+.threshold-input:focus {
+  border-color: var(--accent);
+  background: var(--surface);
 }
 
 .mono {

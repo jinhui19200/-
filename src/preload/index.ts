@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
-import type { DB, DeleteRecordResult, TransactionInput, TransactionResult } from '@shared/types'
+import type {
+  DB,
+  DeleteRecordResult,
+  SetThresholdResult,
+  TransactionInput,
+  TransactionResult
+} from '@shared/types'
 
 /**
  * 数据变更订阅表。
@@ -42,6 +48,10 @@ const api = {
   /** 撤销记录（会反向冲销库存） */
   deleteRecord: (id: string): Promise<DeleteRecordResult> =>
     ipcRenderer.invoke('db:deleteRecord', id),
+
+  /** 修改物品警戒值 */
+  setItemThreshold: (id: string, threshold: number): Promise<SetThresholdResult> =>
+    ipcRenderer.invoke('db:setThreshold', id, threshold),
 
   /** 导出 Excel */
   exportXlsx: (data: number[], defaultName: string): Promise<{

@@ -11,6 +11,32 @@ export function normalizeName(raw: string): string {
   return raw.trim().replace(/\s+/g, ' ')
 }
 
+/** 库存警戒值的默认值。新物品、以及旧数据里没有这个字段的物品都用它。 */
+export const DEFAULT_THRESHOLD = 100
+
+/**
+ * 把任意输入归一成合法的警戒值。
+ *
+ * 非法输入（空串、NaN、负数）一律回落到默认值而不是抛错 ——
+ * 用户正在输入框里清空重填时，中途的空串是正常状态，
+ * 不该让界面炸掉，也不该把 0 偷偷写进数据。
+ */
+export function normalizeThreshold(raw: unknown): number {
+  // 空串要单独挡掉：Number('') === 0，不特判就会把「用户清空输入框」
+  // 当成「警戒值设为 0」，静默写进数据。
+  if (raw === null || raw === undefined) return DEFAULT_THRESHOLD
+  if (typeof raw === 'string' && raw.trim() === '') return DEFAULT_THRESHOLD
+
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_THRESHOLD
+  return roundQuantity(n)
+}
+
+/** 库存是否低于警戒值（界面据此标红） */
+export function isBelowThreshold(quantity: number, threshold: number): boolean {
+  return quantity < normalizeThreshold(threshold)
+}
+
 /** 数量保留 3 位小数，避免浮点累加产生 0.30000000000000004 这类脏值 */
 export function roundQuantity(n: number): number {
   return Math.round(n * 1000) / 1000

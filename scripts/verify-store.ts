@@ -10,7 +10,8 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDataFilePath, getLoadReport, getSnapshot, initStore, load } from '../src/main/store/db'
-import { applyTransaction, deleteRecord } from '../src/main/store/transactions'
+import { applyTransaction, deleteRecord, setItemThreshold } from '../src/main/store/transactions'
+import { DEFAULT_THRESHOLD } from '../src/shared/utils'
 
 let passed = 0
 let failed = 0
@@ -247,6 +248,75 @@ async function main(): Promise<void> {
   await load()
   const legacyRec = getSnapshot().records[0]
   check('旧记录 operator 被补成空串', legacyRec.operator === '', `实际 ${JSON.stringify(legacyRec.operator)}`)
+  // 警戒值是后加的功能，旧数据文件里没有这个字段
+  const legacyItem = getSnapshot().items[0]
+  check(
+    '旧物品 threshold 被补成默认值 100',
+    legacyItem.threshold === DEFAULT_THRESHOLD,
+    `实际 ${JSON.stringify(legacyItem.threshold)}`
+  )
+
+  section('17. 警戒值')
+  // 回到主测试目录
+  initStore(dir)
+  await load()
+  const first = getSnapshot().items[0]
+  check(
+    '新物品默认警戒值 100',
+    first.threshold === DEFAULT_THRESHOLD,
+    `实际 ${first.threshold}`
+  )
+
+  const recordsBeforeThreshold = getSnapshot().records.length
+  const set1 = await setItemThreshold(first.id, 7)
+  check('改成 7 成功', set1.ok && set1.item.threshold === 7, JSON.stringify(set1))
+  check(
+    '改警戒值不写流水（记录数不变）',
+    getSnapshot().records.length === recordsBeforeThreshold,
+    `${getSnapshot().records.length} vs ${recordsBeforeThreshold}`
+  )
+  check(
+    '内存快照同步',
+    getSnapshot().items.find((i) => i.id === first.id)?.threshold === 7
+  )
+
+  // 落盘校验：重新从磁盘读一遍，而不是信内存
+  const diskAfterSet = JSON.parse(await readFile(getDataFilePath(), 'utf8'))
+  check(
+    '警戒值已落盘',
+    diskAfterSet.items.find((i: { id: string }) => i.id === first.id)?.threshold === 7
+  )
+
+  const set2 = await setItemThreshold(first.id, 250.5)
+  check('小数保留（250.5）', set2.ok && set2.item.threshold === 250.5, JSON.stringify(set2))
+
+  for (const [label, bad] of [
+    ['空串', ''],
+    ['纯空白', '   '],
+    ['非数字', 'abc'],
+    ['负数', -5],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY]
+  ] as const) {
+    const res = await setItemThreshold(first.id, bad as unknown as number)
+    check(
+      `非法输入「${label}」回落默认值 100`,
+      res.ok && res.item.threshold === DEFAULT_THRESHOLD,
+      JSON.stringify(res)
+    )
+  }
+
+  const missing = await setItemThreshold('不存在的-id', 10)
+  check('物品不存在时返回错误', !missing.ok, JSON.stringify(missing))
+
+  // 持久化：重启后（重新 load）警戒值还在
+  const persistedDir = dir
+  initStore(persistedDir)
+  await load()
+  check(
+    '重新加载后警戒值仍为 100（上一轮非法输入的结果）',
+    getSnapshot().items.find((i) => i.id === first.id)?.threshold === DEFAULT_THRESHOLD
+  )
 
   await rm(dir, { recursive: true, force: true })
   await rm(legacyDir, { recursive: true, force: true })

@@ -2,11 +2,18 @@ import { randomUUID } from 'node:crypto'
 import type {
   DeleteRecordResult,
   Item,
+  SetThresholdResult,
   StockRecord,
   TransactionInput,
   TransactionResult
 } from '@shared/types'
-import { normalizeName, roundQuantity, toLocalDateTime } from '@shared/utils'
+import {
+  DEFAULT_THRESHOLD,
+  normalizeName,
+  normalizeThreshold,
+  roundQuantity,
+  toLocalDateTime
+} from '@shared/utils'
 import { cloneDB, commit, enqueue, load } from './db'
 
 /**
@@ -69,6 +76,7 @@ export function applyTransaction(input: TransactionInput): Promise<TransactionRe
         name: v.name,
         unit,
         quantity: 0,
+        threshold: DEFAULT_THRESHOLD,
         createdAt: now,
         updatedAt: now
       }
@@ -144,3 +152,40 @@ export function deleteRecord(id: string): Promise<DeleteRecordResult> {
     }
   })
 }
+
+/**
+ * 修改某个物品的库存警戒值。
+ *
+ * 刻意**不写流水**：警戒值是一个观察阈值，不是库存变动。
+ * 把它记进出库记录会让「本月入库/出库」的统计和撤销逻辑全部失准。
+ *
+ * 非法输入（清空、负数、非数字）统一回落到默认值 100，
+ * 而不是报错拒绝 —— 用户在输入框里删光重填是正常操作，
+ * 那一刻的中间态不该弹错误提示。
+ */
+export function setItemThreshold(id: string, threshold: unknown): Promise<SetThresholdResult> {
+  return enqueue(async () => {
+    const current = await load()
+    const target = current.items.find((i) => i.id === id)
+    if (!target) return { ok: false, error: '物品不存在，可能已被删除' }
+
+    const next = cloneDB(current)
+    const item = next.items.find((i) => i.id === id) as Item
+    const value = normalizeThreshold(threshold)
+
+    // 没变就什么都不做：避免每次失焦都触发一次写盘 + 全窗口广播
+    if (item.threshold === value) return { ok: true, item: { ...item } }
+
+    item.threshold = value
+
+    try {
+      await commit(next)
+    } catch (err) {
+      return { ok: false, error: `保存失败：${String(err)}` }
+    }
+
+    return { ok: true, item: { ...item } }
+  })
+}
+
+export { DEFAULT_THRESHOLD }

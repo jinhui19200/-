@@ -2,7 +2,7 @@ import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { writeFile } from 'node:fs/promises'
 import type { TransactionInput } from '@shared/types'
 import { getDataDir, getDataFilePath, getLoadReport, getSnapshot } from './store/db'
-import { applyTransaction, deleteRecord } from './store/transactions'
+import { applyTransaction, deleteRecord, setItemThreshold } from './store/transactions'
 
 /**
  * 数据变更后广播给所有窗口。
@@ -44,6 +44,13 @@ export function registerIpcHandlers(): void {
   /** 撤销记录（会反向冲销库存） */
   ipcMain.handle('db:deleteRecord', async (_event, id: string) => {
     const result = await deleteRecord(id)
+    if (result.ok) broadcastChanged()
+    return result
+  })
+
+  /** 修改物品警戒值 */
+  ipcMain.handle('db:setThreshold', async (_event, id: string, threshold: number) => {
+    const result = await setItemThreshold(id, threshold)
     if (result.ok) broadcastChanged()
     return result
   })

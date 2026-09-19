@@ -275,8 +275,19 @@ async function run(): Promise<void> {
   const cells = await firstRowCells(win)
   check('数量单元格 = -35', cells[1] === '-35', cells[1] ?? '(无)')
   check('单位单元格 = 个（单位锁定生效）', cells[2] === '个', cells[2] ?? '(无)')
-  check('本月入库 = +165', cells[3] === '+165', cells[3] ?? '(无)')
-  check('本月出库 = -200', cells[4] === '-200', cells[4] ?? '(无)')
+  // 列顺序：名称 | 数量 | 单位 | 警戒值 | 本月入库 | 本月出库 | 操作
+  // 注意：警戒值单元格里是个 <input>，它的 textContent 永远是空串，
+  // 必须读 .value —— 直接比 textContent 会得到一个假失败。
+  const thresholdCell = await win!.webContents.executeJavaScript(
+    `(() => {
+       const tr = document.querySelector('tbody tr')
+       const input = tr && tr.querySelector('.threshold-input')
+       return input ? input.value : null
+     })()`
+  )
+  check('新物品警戒值默认为 100', thresholdCell === '100', String(thresholdCell))
+  check('本月入库 = +165', cells[4] === '+165', cells[4] ?? '(无)')
+  check('本月出库 = -200', cells[5] === '-200', cells[5] ?? '(无)')
   check('负库存带高亮类名', await quantityIsNegative(win))
 
   // ── 8. 撤销反向冲销 ──────────────────────────────────────────

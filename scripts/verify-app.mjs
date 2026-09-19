@@ -166,6 +166,51 @@ const warehouseRow = (page, name) =>
     return tr ? [...tr.querySelectorAll('td')].map((td) => td.textContent.trim()) : null
   }, name)
 
+/** 真实窗口里某物品的库存是否低于警戒值（看数量单元格的类名） */
+const quantityIsLow = (page, name) =>
+  page.evaluate((n) => {
+    const tr = [...document.querySelectorAll('tbody tr')].find(
+      (r) => r.querySelector('td')?.textContent?.trim() === n
+    )
+    if (!tr) return null
+    return tr.querySelectorAll('td')[1].classList.contains('below-threshold')
+  }, name)
+
+/**
+ * 真实窗口里某物品的警戒值。
+ * 必须读 input.value —— 单元格里是 <input>，它的 textContent 恒为空串，
+ * 拿 warehouseRow 的下标去比会得到一个假失败。
+ */
+const thresholdOf = (page, name) =>
+  page.evaluate((n) => {
+    const tr = [...document.querySelectorAll('tbody tr')].find(
+      (r) => r.querySelector('td')?.textContent?.trim() === n
+    )
+    const input = tr && tr.querySelector('.threshold-input')
+    return input ? input.value : null
+  }, name)
+
+/** 真实窗口里改警戒值：聚焦 → 改值 → 失焦（提交发生在 onBlur） */
+async function setThresholdViaUi(page, name, value) {
+  await page.evaluate(
+    ([n, v]) => {
+      const tr = [...document.querySelectorAll('tbody tr')].find(
+        (r) => r.querySelector('td')?.textContent?.trim() === n
+      )
+      if (!tr) throw new Error('找不到物品行：' + n)
+      const input = tr.querySelector('.threshold-input')
+      if (!input) throw new Error('找不到警戒值输入框')
+      input.focus()
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      set.call(input, String(v))
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.blur()
+    },
+    [name, value]
+  )
+  await sleep(600)
+}
+
 async function readJson(path) {
   return JSON.parse(await readFile(path, 'utf8'))
 }
@@ -275,12 +320,29 @@ try {
   check('磁盘上 1 个物品', after1.items.length === 1, `${after1.items.length}`)
   check('磁盘上 1 条记录', after1.records.length === 1, `${after1.records.length}`)
   check('名称 / 数量 / 单位 / 操作人 正确', after1.items[0]?.name === 'M3×8 螺丝' && after1.items[0]?.quantity === 100 && after1.items[0]?.unit === '个' && after1.records[0]?.operator === '张三', JSON.stringify(after1.items[0]))
+  check('新物品的警戒值落盘为默认 100', after1.items[0]?.threshold === 100, `${after1.items[0]?.threshold}`)
 
   await switchTab(page, '仓库')
   await sleep(400)
   const row1 = await warehouseRow(page, 'M3×8 螺丝')
   check('仓库页显示库存 100', row1?.[1] === '100', row1?.join(' / '))
+  check('仓库页显示警戒值 100', (await thresholdOf(page, 'M3×8 螺丝')) === '100', await thresholdOf(page, 'M3×8 螺丝'))
+  check('库存 100 不低于警戒值 100，不标红', (await quantityIsLow(page, 'M3×8 螺丝')) === false)
   await shot(page, '1-after-in')
+
+  // 通过真实窗口改警戒值 → 真实落盘
+  await setThresholdViaUi(page, 'M3×8 螺丝', 300)
+  const afterThreshold = await readJson(dataFile)
+  check(
+    '界面改警戒值 → 真实落盘为 300',
+    afterThreshold.items[0]?.threshold === 300,
+    `${afterThreshold.items[0]?.threshold}`
+  )
+  check('改警戒值没有新增流水', afterThreshold.records.length === 1, `${afterThreshold.records.length}`)
+  check('库存 100 < 300，真实窗口里标红', await quantityIsLow(page, 'M3×8 螺丝') === true)
+  await shot(page, '1b-threshold-low')
+  // 改回去，避免影响后面的负库存用例
+  await setThresholdViaUi(page, 'M3×8 螺丝', 100)
 
   // 出库超过库存 → 负库存，只警告不阻断（走真实 alert）
   await submitViaUi(page, { type: 'out', name: 'M3×8 螺丝', quantity: 130, unit: '个' })

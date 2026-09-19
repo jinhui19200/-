@@ -25,6 +25,7 @@ export default function App() {
     dataPath,
     applyTransaction,
     deleteRecord,
+    setItemThreshold,
     exportXlsx,
     openDataFolder
   } = useAppData()
@@ -93,6 +94,7 @@ export default function App() {
             items={db.items}
             records={db.records}
             applyTransaction={applyTransaction}
+            setItemThreshold={setItemThreshold}
           />
         )}
         {ready && tab === 'records' && (
