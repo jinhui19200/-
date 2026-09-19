@@ -25,6 +25,10 @@
  * 环境变量 SEED_MONTHS=1 可以只铺当月数据，用来做**反向验证**：
  * 那时平移整组断言必须变红，能变红才证明它们不是空跑。
  *
+ * 环境变量：
+ *   SEED_MONTHS=1            只铺当月数据，用来做反向验证（平移断言应全部变红）
+ *   VERIFY_PACKAGED_SHOTS=1  把报表页截图写到 out/verify-packaged/
+ *
  * 四个容易写错、导致「假通过」的地方，已刻意规避：
  *   1. 读 getAttribute('src') 只能拿到相对路径 './assets/…'，恒不匹配 app.asar，要读解析后的 el.src
  *   2. 全新 userData 里仓库是空的，报表页走空状态分支，几何断言会在空集上「通过」——必须先造数据
@@ -32,11 +36,12 @@
  *   4. 出入库要落在**同一张卡**上，否则去没有出库记录的卡上找出库柱，只会得到空集
  */
 import { spawn } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
 const { chromium } = require('playwright')
@@ -49,6 +54,8 @@ if (!VOLUME) {
 const CDP_PORT = Number(process.argv[3] ?? 9241)
 const ENDPOINT = `http://127.0.0.1:${CDP_PORT}`
 const BIN = join(VOLUME, '库存管理系统.app', 'Contents', 'MacOS', '库存管理系统')
+const SHOT_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'out', 'verify-packaged')
+const WANT_SHOTS = process.env.VERIFY_PACKAGED_SHOTS === '1'
 
 const SEED_ITEM = 'M3×8 螺丝'
 const UI_ITEM = '贴片电阻 10kΩ'
@@ -172,6 +179,12 @@ try {
   await page.waitForSelector('.tab')
   check('窗口渲染出界面（preload 链路通）', true)
 
+  if (WANT_SHOTS) await mkdir(SHOT_DIR, { recursive: true })
+  const shot = async (name) => {
+    if (!WANT_SHOTS) return
+    await page.screenshot({ path: join(SHOT_DIR, `${name}.png`), fullPage: true })
+  }
+
   const resolvedSrc = await page.$eval('script[type=module]', (s) => s.src)
   check('渲染资源来自 app.asar', /app\.asar/.test(resolvedSrc), resolvedSrc.replace(/^file:\/\//, '').slice(-58))
 
@@ -255,6 +268,7 @@ try {
   }
   check('每根带标注的柱子都与自身数值成比例', bad.length === 0,
     bad.length ? JSON.stringify(bad) : `${inLab.length + outLab.length} 根吻合（刻度 ${card.scaleMax}）`)
+  await shot('1-报表-默认最近12个月')
 
   // ---- 12 个月窗口平移 ----
   const rangeText = () => page.$eval('.report-range', (e) => e.textContent.trim().replace(/^统计区间：/, ''))
@@ -302,6 +316,7 @@ try {
     (barAt(atStop, months[0], 'in')?.h ?? 0) > 0, `${months[0]} 入库柱高 ${barAt(atStop, months[0], 'in')?.h}`)
   check('滑到最早处，当月已滑出窗口', !atStop.months.includes(months[HISTORY_MONTHS - 1]),
     atStop.months.join(' '))
+  await shot('2-报表-滑到最早（含窗口外提示）')
 
   await clickBtn('回到最新')
   check('「回到最新」复位到默认区间', (await rangeText()) === rangeFor(0), await rangeText())
