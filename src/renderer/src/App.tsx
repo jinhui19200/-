@@ -15,7 +15,7 @@ const TABS: { key: TabKey; label: string }[] = [
 export default function App() {
   const [tab, setTab] = useState<TabKey>('warehouse')
   const [bridge, setBridge] = useState('通道检测中…')
-  const { db, ready, error } = useAppData()
+  const { db, ready, error, applyTransaction } = useAppData()
 
   useEffect(() => {
     Promise.resolve()
@@ -48,9 +48,21 @@ export default function App() {
 
       <main className="content">
         {!ready && <p className="loading">正在读取数据…</p>}
-        {ready && tab === 'warehouse' && <WarehousePage items={db.items} />}
+        {ready && tab === 'warehouse' && (
+          <WarehousePage
+            items={db.items}
+            records={db.records}
+            applyTransaction={applyTransaction}
+          />
+        )}
         {ready && tab === 'records' && <RecordsPage records={db.records} />}
-        {ready && tab === 'operation' && <OperationPage />}
+        {ready && tab === 'operation' && (
+          <OperationPage
+            items={db.items}
+            records={db.records}
+            applyTransaction={applyTransaction}
+          />
+        )}
       </main>
     </div>
   )

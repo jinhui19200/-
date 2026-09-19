@@ -27,6 +27,8 @@ export interface StockRecord {
   /** 数量，恒为正数，方向由 type 决定 */
   quantity: number
   type: TransactionType
+  /** 操作人快照（选填）。空串表示未填 */
+  operator: string
   /** 机器写入时间（ISO），用于审计与排序兜底 */
   createdAt: string
 }
@@ -47,6 +49,8 @@ export interface TransactionInput {
    * 物品已存在时数据层会忽略此值，强制使用 item.unit。
    */
   unit?: string
+  /** 操作人（选填） */
+  operator?: string
   type: TransactionType
 }
 

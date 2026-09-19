@@ -191,3 +191,219 @@ body {
   background: var(--out-bg);
   color: var(--out-fg);
 }
+
+/* ===== 按钮 ===== */
+.btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  white-space: nowrap;
+}
+
+.btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 5px;
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-muted);
+}
+
+.btn-ghost:hover:not(:disabled) {
+  background: var(--border-soft);
+  opacity: 1;
+}
+
+/* ===== 弹窗 ===== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+
+.modal {
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18);
+  width: 100%;
+  max-width: 420px;
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 0;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.modal-close {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.modal-close:hover {
+  color: var(--text);
+}
+
+.modal .tx-form {
+  padding: 12px 20px 20px;
+}
+
+/* ===== 表单 ===== */
+.tx-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tx-field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tx-field label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.tx-field input {
+  appearance: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 14px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.tx-field input:focus {
+  border-color: var(--accent);
+}
+
+.tx-field input:read-only {
+  background: var(--bg);
+  color: var(--text-muted);
+}
+
+.tx-locked {
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.tx-input-wrap {
+  position: relative;
+}
+
+.tx-suggestions {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  z-index: 10;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tx-suggestion {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.tx-suggestion:hover {
+  background: var(--bg);
+}
+
+.tx-error {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+.tx-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* ===== 操作页双栏 ===== */
+.operation-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.operation-block {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px 20px;
+  border-left-width: 4px;
+}
+
+.operation-block h3 {
+  margin: 0 0 14px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+@media (max-width: 720px) {
+  .operation-grid {
+    grid-template-columns: 1fr;
+  }
+}

@@ -42,30 +42,77 @@ export function getSnapshot(): DB {
 export async function load(): Promise<DB> {
   if (cache) return cache
 
+  const target = getDataFilePath()
+  const bak = `${target}.bak`
+
+  // 先尝试读主文件
+  let raw: string | undefined
   try {
-    const raw = await fs.readFile(getDataFilePath(), 'utf8')
-    const parsed = JSON.parse(raw) as Partial<DB>
-    cache = {
-      version: 1,
-      items: Array.isArray(parsed.items) ? parsed.items : [],
-      records: Array.isArray(parsed.records) ? parsed.records : []
-    }
+    raw = await fs.readFile(target, 'utf8')
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code
     if (code === 'ENOENT') {
       // 首次运行，还没有数据文件
-      cache = { ...EMPTY_DB, items: [], records: [] }
-    } else {
-      // 文件存在但读不了或解析不了 —— 不能默默当成空库，否则会覆盖掉用户数据
-      throw new Error(`数据文件读取失败（${getDataFilePath()}）：${String(err)}`)
+      cache = { ...EMPTY_DB }
+      return cache
+    }
+    // 文件存在但读不了 —— 尝试用备份恢复
+  }
+
+  // 主文件读成功 → 正常解析
+  if (raw !== undefined) {
+    try {
+      cache = parseDB(raw)
+      return cache
+    } catch {
+      // 解析失败 → 继续尝试备份恢复
     }
   }
 
-  return cache
+  // 主文件读不了或解析不了 → 尝试从 .bak 恢复
+  let recovered = false
+  try {
+    const bakRaw = await fs.readFile(bak, 'utf8')
+    const bakData = parseDB(bakRaw)
+    // 恢复成功后立刻重写 data.json，否则下一次 commit 的「先拷成备份」
+    // 会把损坏的主文件覆盖到那个唯一的好备份上，.bak 就废了。
+    await commit(bakData)
+    cache = bakData
+    recovered = true
+  } catch {
+    /* 备份也用不了 */
+  }
+
+  if (!recovered) {
+    throw new Error(
+      `数据文件损坏且无法从备份恢复（${target}）。\n` +
+        `建议检查备份：${bak}`
+    )
+  }
+
+  // 通知调用方「已从备份恢复」（通过异常抛出一个特殊标记）
+  const e = new Error(`RECovered_from_backup:${target}`)
+  ;(e as Error & { recoveredFromBackup: true }).recoveredFromBackup = true
+  throw e
+}
+
+function parseDB(raw: string): DB {
+  const parsed = JSON.parse(raw) as Partial<DB>
+  const records = Array.isArray(parsed.records)
+    ? parsed.records.map((r) => ({
+        ...r,
+        operator: (r as { operator?: string }).operator ?? ''
+      }))
+    : []
+  return {
+    version: 1,
+    items: Array.isArray(parsed.items) ? parsed.items : [],
+    records
+  }
 }
 
 /** 原子写入并把内存快照切到新值。失败时内存保持原样。 */
-export async function commit(next: DB): Promise<void> {
+export async function commit(next: DB, skipBackup = false): Promise<void> {
   const target = getDataFilePath()
   const tmp = `${target}.tmp`
   const bak = `${target}.bak`
@@ -79,11 +126,13 @@ export async function commit(next: DB): Promise<void> {
     await handle.close()
   }
 
-  // 保留上一份作为备份（首次运行时没有旧文件）
-  try {
-    await fs.copyFile(target, bak)
-  } catch {
-    /* 忽略：首次运行 */
+  // 保留上一份作为备份（首次运行时没有旧文件；恢复时跳过，以免坏文件覆盖好备份）
+  if (!skipBackup) {
+    try {
+      await fs.copyFile(target, bak)
+    } catch {
+      /* 忽略：首次运行 */
+    }
   }
 
   await fs.rename(tmp, target) // 原子替换

@@ -83,11 +83,12 @@ export function applyTransaction(input: TransactionInput): Promise<TransactionRe
       id: randomUUID(),
       itemId: item.id,
       time: input.time || toLocalDateTime(),
-      // name / unit 存快照：历史记录是铁证，不受物品后来改名换单位的影响
+      // name / unit / operator 存快照：历史记录是铁证
       name: item.name,
       unit,
       quantity: v.quantity,
       type: input.type,
+      operator: (input.operator ?? '').trim(),
       createdAt: now
     }
     next.records.push(record)

@@ -39,3 +39,34 @@ export function toLocalDateTime(d: Date = new Date()): string {
 export function displayDateTime(value: string): string {
   return value.replace('T', ' ')
 }
+
+/**
+ * 从 `YYYY-MM-DDTHH:mm` 提取自然月标识：`YYYY-MM`。
+ * 月度统计用此作为分组键。
+ */
+export function monthKey(value: string): string {
+  return value.slice(0, 7) // 'YYYY-MM'
+}
+
+/** 当前自然月的标识，如 `2026-09` */
+export function currentMonth(): string {
+  return monthKey(toLocalDateTime())
+}
+
+/**
+ * 按自然月统计每个物品的入库、出库总量。
+ * 返回 `{ [itemId]: { in: number, out: number } }`。
+ */
+export function computeMonthlyTotals(
+  records: Array<{ itemId: string; time: string; quantity: number; type: 'in' | 'out' }>,
+  month: string
+): Record<string, { in: number; out: number }> {
+  const map: Record<string, { in: number; out: number }> = {}
+  for (const r of records) {
+    if (monthKey(r.time) !== month) continue
+    const cur = map[r.itemId] ?? { in: 0, out: 0 }
+    cur[r.type] = roundQuantity(cur[r.type] + r.quantity)
+    map[r.itemId] = cur
+  }
+  return map
+}

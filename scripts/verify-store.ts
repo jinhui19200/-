@@ -2,11 +2,11 @@
  * 数据层自检脚本。
  *
  * 覆盖：原子写入、事务原子性、单位锁定、名称归一化、负库存、浮点精度、
- * 撤销反向冲销、持久化重载、并发写。
+ * 撤销反向冲销、持久化重载、并发写、损坏恢复、操作人字段。
  *
  * 运行：npm run verify:store
  */
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDataFilePath, getSnapshot, initStore, load } from '../src/main/store/db'
@@ -42,6 +42,7 @@ async function main(): Promise<void> {
     name: 'M3螺丝',
     quantity: 100,
     unit: '个',
+    operator: '张三',
     type: 'in'
   })
   check('入库成功', r.ok === true, r.ok ? '' : r.error)
@@ -50,6 +51,7 @@ async function main(): Promise<void> {
     check('单位 = 个', r.item.unit === '个', `实际 ${r.item.unit}`)
     check('记录方向 = in', r.record.type === 'in')
     check('记录单位存的是快照', r.record.unit === '个')
+    check('操作人快照 = 张三', r.record.operator === '张三')
   }
 
   section('2. 同一物品再次入库应累加')
@@ -181,7 +183,42 @@ async function main(): Promise<void> {
   check('被拒绝的操作没有改变库存', getSnapshot().items.find((i) => i.name === 'M3螺丝')!.quantity === qBefore)
   check('被拒绝的操作没有新增记录', getSnapshot().records.length === rcBefore)
 
+  section('15. 损坏恢复：主文件坏掉时从 .bak 恢复')
+  const target = getDataFilePath()
+  const goodContent = await readFile(target, 'utf8')
+  // 把主文件写坏
+  await writeFile(target, '这不是 JSON { 坏掉了')
+  // 清缓存，重新加载
+  initStore(dir)
+  let recovered = false
+  try {
+    await load()
+  } catch (err) {
+    if ((err as Error & { recoveredFromBackup?: boolean }).recoveredFromBackup) {
+      recovered = true
+    }
+  }
+  check('检测到损坏并从备份恢复', recovered)
+  const restoredRaw = await readFile(target, 'utf8')
+  check('恢复后 data.json 是合法 JSON', (() => { try { JSON.parse(restoredRaw); return true } catch { return false } })())
+  // 清理：把好的写回去，避免影响后续测试
+  await writeFile(target, goodContent)
+
+  section('16. 旧数据无 operator 字段时自动补空串')
+  const legacy = JSON.stringify({
+    version: 1,
+    items: [{ id: '1', name: ' legacy', unit: '个', quantity: 10, createdAt: 'x', updatedAt: 'x' }],
+    records: [{ id: 'r1', itemId: '1', time: '2026-01-01T00:00', name: 'legacy', unit: '个', quantity: 5, type: 'in', createdAt: 'x' }]
+  })
+  const legacyDir = await mkdtemp(join(tmpdir(), 'wh-legacy-test-'))
+  await writeFile(join(legacyDir, 'data.json'), legacy)
+  initStore(legacyDir)
+  await load()
+  const legacyRec = getSnapshot().records[0]
+  check('旧记录 operator 被补成空串', legacyRec.operator === '', `实际 ${JSON.stringify(legacyRec.operator)}`)
+
   await rm(dir, { recursive: true, force: true })
+  await rm(legacyDir, { recursive: true, force: true })
 
   console.log(`\n${'='.repeat(52)}`)
   console.log(`通过 ${passed} 项，失败 ${failed} 项`)

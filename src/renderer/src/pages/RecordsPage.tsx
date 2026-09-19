@@ -33,6 +33,7 @@ export function RecordsPage({ records }: Props): React.JSX.Element {
             <th>名称</th>
             <th className="num">数量</th>
             <th>单位</th>
+            <th>操作人</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -43,6 +44,9 @@ export function RecordsPage({ records }: Props): React.JSX.Element {
               <td>{record.name}</td>
               <td className="num">{formatQuantity(record.quantity)}</td>
               <td>{record.unit}</td>
+              <td className="mono" style={{ color: record.operator ? undefined : 'var(--text-faint)' }}>
+                {record.operator || '—'}
+              </td>
               <td>
                 <span className={record.type === 'in' ? 'tag tag-in' : 'tag tag-out'}>
                   {record.type === 'in' ? '入库' : '出库'}

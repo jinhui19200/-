@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { DB } from '@shared/types'
+import type { DB, TransactionInput, TransactionResult } from '@shared/types'
 
 const EMPTY_DB: DB = { version: 1, items: [], records: [] }
 
@@ -8,6 +8,7 @@ export interface AppData {
   ready: boolean
   error: string
   refresh: () => Promise<void>
+  applyTransaction: (input: TransactionInput) => Promise<TransactionResult>
 }
 
 /**
@@ -25,6 +26,15 @@ export function useAppData(): AppData {
     const snapshot = await window.api.getSnapshot()
     setDb(snapshot)
   }, [])
+
+  const applyTransaction = useCallback(
+    async (input: TransactionInput): Promise<TransactionResult> => {
+      const result = await window.api.applyTransaction(input)
+      if (result.ok) await refresh()
+      return result
+    },
+    [refresh]
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -63,5 +73,5 @@ export function useAppData(): AppData {
     }
   }, [refresh])
 
-  return { db, ready, error, refresh }
+  return { db, ready, error, refresh, applyTransaction }
 }
