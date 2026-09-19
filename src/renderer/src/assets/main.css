@@ -168,10 +168,34 @@ body {
   white-space: nowrap;
 }
 
+/*
+ * 数值列表头必须跟数据一样右对齐。
+ *
+ * 注意权重：`.table th`（0-1-1）压得过 `.num`（0-1-0），
+ * 所以只给 th 加 class="num" 是不够的 —— 那样表头会留在左对齐，
+ * 数字却在右边，看起来就是「表头和数据没对齐」。
+ * 这里显式写 `.table th.num` 把权重提到 0-2-1。
+ */
+.table th.num,
+.table td.num {
+  text-align: right;
+}
+
 .table td {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border-soft);
   vertical-align: middle;
+}
+
+/* 列与列之间的分割线。只画列间线：首列左侧、末列右侧不加，避免和卡片边框叠成双线 */
+.table th,
+.table td {
+  border-right: 1px solid var(--border);
+}
+
+.table th:last-child,
+.table td:last-child {
+  border-right: 0;
 }
 
 .table tbody tr:last-child td {
@@ -449,6 +473,48 @@ body {
 
 .search-input::placeholder {
   color: var(--text-faint);
+}
+
+/* ===== 时间范围筛选 ===== */
+.date-range {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/*
+ * 刻意不写 appearance: none —— Chromium 的日历图标挂在
+ * ::-webkit-calendar-picker-indicator 上，清掉 appearance 会让它消失。
+ */
+.date-input {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.date-input:focus {
+  border-color: var(--accent);
+}
+
+.date-input::-webkit-calendar-picker-indicator {
+  opacity: 0.45;
+  cursor: pointer;
+}
+
+.date-input::-webkit-calendar-picker-indicator:hover {
+  opacity: 0.8;
+}
+
+.date-sep {
+  color: var(--text-faint);
+  font-size: 12px;
+  user-select: none;
 }
 
 .filter-group {

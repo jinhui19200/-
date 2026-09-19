@@ -17,7 +17,12 @@ interface Props {
 export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React.JSX.Element {
   const [search, setSearch] = useState('')
   const [filterType, setFilterType] = useState<'all' | 'in' | 'out'>('all')
+  /** 时间范围，格式 'YYYY-MM-DD'；空串表示该端不限制。两端都是闭区间，含当日 */
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
   const [exporting, setExporting] = useState(false)
+
+  const rangeInvalid = Boolean(dateFrom && dateTo && dateFrom > dateTo)
 
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase()
@@ -28,13 +33,26 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
     if (filterType !== 'all') {
       list = list.filter((r) => r.type === filterType)
     }
+    if (dateFrom || dateTo) {
+      list = list.filter((r) => {
+        // time 是 'YYYY-MM-DDTHH:mm'，取前 10 位即业务日期。
+        // 按「日期字符串」而不是「时刻」比较，等于天然含当日 ——
+        // 截止日当天 23:59 的记录也会被保留。
+        const day = r.time.slice(0, 10)
+        if (dateFrom && day < dateFrom) return false
+        if (dateTo && day > dateTo) return false
+        return true
+      })
+    }
     // 按业务时间倒序，同一时间用写入时间兜底
     list.sort((a, b) => {
       const byTime = b.time.localeCompare(a.time)
       return byTime !== 0 ? byTime : b.createdAt.localeCompare(a.createdAt)
     })
     return list
-  }, [records, search, filterType])
+  }, [records, search, filterType, dateFrom, dateTo])
+
+  const filterActive = Boolean(search.trim() || filterType !== 'all' || dateFrom || dateTo)
 
   const handleDelete = async (record: StockRecord): Promise<void> => {
     const msg = record.operator
@@ -53,17 +71,15 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
     setExporting(true)
     try {
       const wb = XLSX.utils.book_new()
-      const data = records
-        .slice()
-        .sort((a, b) => b.time.localeCompare(a.time) || b.createdAt.localeCompare(a.createdAt))
-        .map((r) => ({
-          时间: displayDateTime(r.time),
-          名称: r.name,
-          数量: r.quantity,
-          单位: r.unit,
-          操作人: r.operator || '—',
-          类型: r.type === 'in' ? '入库' : '出库'
-        }))
+      // 导出当前筛选结果 —— 界面上看到几条就导出几条，避免「筛完再导出却拿到全量」
+      const data = filtered.map((r) => ({
+        时间: displayDateTime(r.time),
+        名称: r.name,
+        数量: r.quantity,
+        单位: r.unit,
+        操作人: r.operator || '—',
+        类型: r.type === 'in' ? '入库' : '出库'
+      }))
       const ws = XLSX.utils.json_to_sheet(data)
       XLSX.utils.book_append_sheet(wb, ws, '出入库记录')
       const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
@@ -87,7 +103,12 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
     <section className="card">
       <div className="records-header">
         <h2>
-          记录<span className="count">{filtered.length} 条</span>
+          记录
+          <span className="count">
+            {filterActive
+              ? `筛选出 ${filtered.length} / 共 ${records.length} 条`
+              : `${filtered.length} 条`}
+          </span>
         </h2>
         <div className="records-toolbar">
           <input
@@ -97,6 +118,40 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <div className="date-range">
+            <input
+              type="date"
+              className="date-input"
+              value={dateFrom}
+              max={dateTo || undefined}
+              onChange={(e) => setDateFrom(e.target.value)}
+              title="起始日期（含当日）"
+              aria-label="起始日期"
+            />
+            <span className="date-sep">～</span>
+            <input
+              type="date"
+              className="date-input"
+              value={dateTo}
+              min={dateFrom || undefined}
+              onChange={(e) => setDateTo(e.target.value)}
+              title="截止日期（含当日）"
+              aria-label="截止日期"
+            />
+            {(dateFrom || dateTo) && (
+              <button
+                type="button"
+                className="btn btn-sm btn-ghost"
+                title="清除时间范围"
+                onClick={() => {
+                  setDateFrom('')
+                  setDateTo('')
+                }}
+              >
+                清除
+              </button>
+            )}
+          </div>
           <div className="filter-group">
             {(
               [
@@ -119,15 +174,18 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
             type="button"
             className="btn btn-sm"
             onClick={handleExport}
-            disabled={exporting || records.length === 0}
+            disabled={exporting || filtered.length === 0}
+            title={filterActive ? `导出当前筛选出的 ${filtered.length} 条` : '导出全部记录'}
           >
-            {exporting ? '导出中…' : '导出 Excel'}
+            {exporting ? '导出中…' : filterActive ? `导出 Excel（${filtered.length} 条）` : '导出 Excel'}
           </button>
         </div>
       </div>
 
       {filtered.length === 0 ? (
-        <p className="empty">没有匹配的记录。</p>
+        <p className="empty">
+          {rangeInvalid ? '起始日期晚于截止日期，请调整时间范围。' : '没有匹配的记录。'}
+        </p>
       ) : (
         <table className="table">
           <thead>
@@ -137,8 +195,8 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
               <th className="num">数量</th>
               <th>单位</th>
               <th>操作人</th>
-              <th>操作</th>
-              <th style={{ width: 1 }} />
+              <th>类型</th>
+              <th style={{ width: 1 }}>操作</th>
             </tr>
           </thead>
           <tbody>
