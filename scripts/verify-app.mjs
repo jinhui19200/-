@@ -85,7 +85,7 @@ function launch(userDataDir) {
   ]
   const child = spawn(join(ROOT, 'node_modules', '.bin', 'electron'), args, {
     cwd: ROOT,
-    env: { ...process.env, NODE_OPTIONS: '', ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
+    env: { ...process.env, NODE_OPTIONS: '', ELECTRON_RUN_AS_NODE: '', ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
     stdio: ['ignore', 'pipe', 'pipe']
   })
   let out = ''
@@ -249,7 +249,7 @@ async function readJson(path) {
 }
 
 /** 用真实界面提交一笔出入库。type='out' 时要点右边那个表单，别拿左边的入库表单凑数 */
-async function submitViaUi(page, { type = 'in', name, quantity, unit, operator }) {
+async function submitViaUi(page, { type = 'in', name, quantity, unit, operator, handler }) {
   await switchTab(page, '操作')
   await sleep(400)
   const form = page.locator('.tx-form').nth(type === 'out' ? 1 : 0)
@@ -260,6 +260,8 @@ async function submitViaUi(page, { type = 'in', name, quantity, unit, operator }
   const readonly = (await unitInput.getAttribute('readonly')) !== null
   if (!readonly) await unitInput.fill(unit)
   if (operator) await form.locator('input[type="text"]').nth(2).fill(operator)
+  // nth(3) = 经手人（入库）/ 领取人（出库）
+  if (handler) await form.locator('input[type="text"]').nth(3).fill(handler)
   await sleep(150)
   await form.locator('button[type="submit"]').click()
   await sleep(700)
@@ -347,13 +349,19 @@ try {
 
   // ── 3. 通过真实界面录入 → 真实磁盘 ───────────────────────
   section('3. 通过界面录入 → 真实落盘')
-  await submitViaUi(page, { type: 'in', name: 'M3×8 螺丝', quantity: 100, unit: '个', operator: '张三' })
+  await submitViaUi(page, { type: 'in', name: 'M3×8 螺丝', quantity: 100, unit: '个', operator: '张三', handler: '赵六' })
   check('data.json 已由真实主进程写出', await readFile(dataFile).then(() => true).catch(() => false))
   const after1 = await readJson(dataFile)
   check('磁盘上 1 个物品', after1.items.length === 1, `${after1.items.length}`)
   check('磁盘上 1 条记录', after1.records.length === 1, `${after1.records.length}`)
   check('名称 / 数量 / 单位 / 操作人 正确', after1.items[0]?.name === 'M3×8 螺丝' && after1.items[0]?.quantity === 100 && after1.items[0]?.unit === '个' && after1.records[0]?.operator === '张三', JSON.stringify(after1.items[0]))
   check('新物品的警戒值落盘为默认 100', after1.items[0]?.threshold === 100, `${after1.items[0]?.threshold}`)
+  // 经手人是后加的字段：要证明它真的走完了「界面 → preload → IPC → 磁盘」这条链路
+  check(
+    '界面填的经手人「赵六」真实落盘',
+    after1.records[0]?.handler === '赵六',
+    JSON.stringify(after1.records[0]?.handler)
+  )
 
   await switchTab(page, '仓库')
   await sleep(400)

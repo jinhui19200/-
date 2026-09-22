@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import * as XLSX from 'xlsx'
 import type {
   Item,
   SetThresholdResult,
@@ -11,7 +12,9 @@ import {
   currentMonth,
   DEFAULT_THRESHOLD,
   formatQuantity,
-  isBelowThreshold
+  isBelowThreshold,
+  matchesItemQuery,
+  pinMatches
 } from '@shared/utils'
 import { TransactionForm } from '../components/TransactionForm'
 
@@ -20,6 +23,12 @@ interface Props {
   records: StockRecord[]
   applyTransaction: (input: TransactionInput) => Promise<TransactionResult>
   setItemThreshold: (id: string, threshold: number) => Promise<SetThresholdResult>
+  exportXlsx: (data: number[], defaultName: string) => Promise<{
+    ok: boolean
+    path?: string
+    cancelled?: boolean
+    error?: string
+  }>
 }
 
 /**
@@ -88,10 +97,13 @@ export function WarehousePage({
   items,
   records,
   applyTransaction,
-  setItemThreshold
+  setItemThreshold,
+  exportXlsx
 }: Props): React.JSX.Element {
   const [modalType, setModalType] = useState<'in' | 'out' | null>(null)
   const [modalName, setModalName] = useState('')
+  const [query, setQuery] = useState('')
+  const [exporting, setExporting] = useState(false)
 
   const month = currentMonth()
   const monthLabel = `${Number(month.slice(5))}月`
@@ -100,6 +112,22 @@ export function WarehousePage({
   const belowCount = useMemo(
     () => items.filter((i) => isBelowThreshold(i.quantity, i.threshold)).length,
     [items]
+  )
+
+  const searchActive = query.trim() !== ''
+
+  /**
+   * 搜索命中的物品**排到最前面**，其余保持原有顺序跟在后面。
+   *
+   * 刻意不隐藏未命中的行：仓库页是全量台账，用户搜「螺丝」时往往还要
+   * 顺手核对旁边的库存；把其余行藏起来，就得反复清空搜索框才能看全。
+   */
+  const ordered = useMemo(() => pinMatches(items, (i) => i.name, query), [items, query])
+
+  /** 命中的物品 id，用来给这些行加一层底色 —— 光靠「排到前面」看不出哪几行是命中的 */
+  const matchedIds = useMemo(
+    () => new Set(items.filter((i) => matchesItemQuery(i.name, query)).map((i) => i.id)),
+    [items, query]
   )
 
   const openModal = (type: 'in' | 'out', name: string): void => {
@@ -121,6 +149,45 @@ export function WarehousePage({
     })
   }
 
+  const handleExport = async (): Promise<void> => {
+    setExporting(true)
+    try {
+      const wb = XLSX.utils.book_new()
+      // 导出**界面当前的顺序**（命中的在前），而不是物品的原始顺序 ——
+      // 「看到什么就导出什么」才不会出现「表格里顺序对不上」的困惑。
+      const data = ordered.map((item) => {
+        const t = totals[item.id] ?? { in: 0, out: 0 }
+        return {
+          名称: item.name,
+          数量: item.quantity,
+          单位: item.unit,
+          警戒值: item.threshold,
+          [`本月入库（${monthLabel}）`]: t.in,
+          [`本月出库（${monthLabel}）`]: t.out,
+          // 界面上低于警戒值的行是浅红的，导出的文件里没有颜色可看，
+          // 就把这个状态落成一列文字，否则导出后这条信息就丢了
+          状态: isBelowThreshold(item.quantity, item.threshold) ? '低于警戒值' : ''
+        }
+      })
+      const ws = XLSX.utils.json_to_sheet(data)
+      XLSX.utils.book_append_sheet(wb, ws, '仓库台账')
+      const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' })
+      const result = await exportXlsx(Array.from(new Uint8Array(buf)), '仓库台账.xlsx')
+      if (result.ok && result.path) {
+        // eslint-disable-next-line no-alert
+        alert(`已导出到：${result.path}`)
+      } else if (!result.cancelled) {
+        // eslint-disable-next-line no-alert
+        alert(`导出失败：${result.error || '未知错误'}`)
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-alert
+      alert(`导出异常：${String(err)}`)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   if (items.length === 0) {
     return (
       <section className="card">
@@ -132,12 +199,54 @@ export function WarehousePage({
 
   return (
     <section className="card">
-      <h2>
-        仓库<span className="count">{items.length} 种物品</span>
-        {belowCount > 0 && (
-          <span className="count count-warn">{belowCount} 种低于警戒值</span>
-        )}
-      </h2>
+      <div className="card-header">
+        <h2>
+          仓库
+          <span className="count">
+            {searchActive
+              ? `匹配 ${matchedIds.size} / 共 ${items.length} 种`
+              : `${items.length} 种物品`}
+          </span>
+          {belowCount > 0 && (
+            <span className="count count-warn">{belowCount} 种低于警戒值</span>
+          )}
+        </h2>
+        <div className="card-toolbar">
+          <input
+            type="text"
+            className="search-input"
+            placeholder="搜索物品名称…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            aria-label="搜索物品"
+          />
+          {searchActive && (
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={() => setQuery('')}
+              title="清除搜索"
+            >
+              清除
+            </button>
+          )}
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => void handleExport()}
+            disabled={exporting}
+            title={`导出仓库台账（共 ${items.length} 种物品，按当前显示顺序）`}
+          >
+            {exporting ? '导出中…' : '导出 Excel'}
+          </button>
+        </div>
+      </div>
+
+      {/* 搜索词没命中任何物品时明说一句。表格仍照常显示全部 —— 见上面 ordered 的注释 */}
+      {searchActive && matchedIds.size === 0 && (
+        <p className="search-note">没有名称包含「{query.trim()}」的物品，下面是全部 {items.length} 种。</p>
+      )}
+
       <table className="table">
         <thead>
           <tr>
@@ -151,11 +260,15 @@ export function WarehousePage({
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => {
+          {ordered.map((item) => {
             const t = totals[item.id] ?? { in: 0, out: 0 }
             const low = isBelowThreshold(item.quantity, item.threshold)
+            const hit = matchedIds.has(item.id)
             return (
-              <tr key={item.id} className={low ? 'row-low' : undefined}>
+              <tr
+                key={item.id}
+                className={[low ? 'row-low' : '', hit ? 'row-hit' : ''].filter(Boolean).join(' ')}
+              >
                 <td>{item.name}</td>
                 <td
                   className={[

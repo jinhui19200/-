@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import type { StockRecord } from '@shared/types'
-import { displayDateTime, formatQuantity } from '@shared/utils'
+import { displayDateTime, formatQuantity, HANDLER_COLUMN, handlerLabel } from '@shared/utils'
 
 interface Props {
   records: StockRecord[]
@@ -55,11 +55,17 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
   const filterActive = Boolean(search.trim() || filterType !== 'all' || dateFrom || dateTo)
 
   const handleDelete = async (record: StockRecord): Promise<void> => {
-    const msg = record.operator
-      ? `确定撤销这条记录？\n\n${displayDateTime(record.time)}  ${record.name}  ${record.type === 'in' ? '入库' : '出库'} ${formatQuantity(record.quantity)} ${record.unit}\n操作人：${record.operator}`
-      : `确定撤销这条记录？\n\n${displayDateTime(record.time)}  ${record.name}  ${record.type === 'in' ? '入库' : '出库'} ${formatQuantity(record.quantity)} ${record.unit}`
+    // 确认框里把「这条记录是谁的、货交给了谁」都写出来。
+    // 撤销是反向冲销库存的破坏性操作，宁可信息多一行，也别让人靠记忆判断点没点错。
+    const lines = [
+      `确定撤销这条记录？`,
+      '',
+      `${displayDateTime(record.time)}  ${record.name}  ${record.type === 'in' ? '入库' : '出库'} ${formatQuantity(record.quantity)} ${record.unit}`
+    ]
+    if (record.operator) lines.push(`操作人：${record.operator}`)
+    if (record.handler) lines.push(`${handlerLabel(record.type)}：${record.handler}`)
     // eslint-disable-next-line no-alert
-    if (!window.confirm(msg)) return
+    if (!window.confirm(lines.join('\n'))) return
     const result = await deleteRecord(record.id)
     if ((result as { ok: boolean; warning?: string }).warning) {
       // eslint-disable-next-line no-alert
@@ -78,6 +84,7 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
         数量: r.quantity,
         单位: r.unit,
         操作人: r.operator || '—',
+        [HANDLER_COLUMN]: r.handler || '—',
         类型: r.type === 'in' ? '入库' : '出库'
       }))
       const ws = XLSX.utils.json_to_sheet(data)
@@ -101,7 +108,7 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
 
   return (
     <section className="card">
-      <div className="records-header">
+      <div className="card-header">
         <h2>
           记录
           <span className="count">
@@ -110,7 +117,7 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
               : `${filtered.length} 条`}
           </span>
         </h2>
-        <div className="records-toolbar">
+        <div className="card-toolbar">
           <input
             type="text"
             className="search-input"
@@ -195,6 +202,7 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
               <th className="num">数量</th>
               <th>单位</th>
               <th>操作人</th>
+              <th>{HANDLER_COLUMN}</th>
               <th>类型</th>
               <th style={{ width: 1 }}>操作</th>
             </tr>
@@ -211,6 +219,13 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
                   style={{ color: record.operator ? undefined : 'var(--text-faint)' }}
                 >
                   {record.operator || '—'}
+                </td>
+                <td
+                  className="mono"
+                  style={{ color: record.handler ? undefined : 'var(--text-faint)' }}
+                  title={record.handler ? `${handlerLabel(record.type)}` : undefined}
+                >
+                  {record.handler || '—'}
                 </td>
                 <td>
                   <span className={record.type === 'in' ? 'tag tag-in' : 'tag tag-out'}>

@@ -91,12 +91,13 @@ export function applyTransaction(input: TransactionInput): Promise<TransactionRe
       id: randomUUID(),
       itemId: item.id,
       time: input.time || toLocalDateTime(),
-      // name / unit / operator 存快照：历史记录是铁证
+      // name / unit / operator / handler 存快照：历史记录是铁证
       name: item.name,
       unit,
       quantity: v.quantity,
       type: input.type,
       operator: (input.operator ?? '').trim(),
+      handler: (input.handler ?? '').trim(),
       createdAt: now
     }
     next.records.push(record)

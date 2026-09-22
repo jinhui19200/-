@@ -37,11 +37,17 @@ mac:
   # 别人从网上下载后会被 Gatekeeper 判为「已损坏，无法打开」（无法右键绕过）。
   # ad-hoc 签名后至少能走「右键 → 打开」放行。
   identity: '-'
+  # 只出 arm64 一份。
+  #
+  # 原先同时出 arm64 + x64，实际交付里 x64 那份是纯负担：
+  # 本机是 Apple Silicon，x64 包要跑 Rosetta 才能验证，而 verify:packaged
+  # 在这种「被当作 Node 启动」的环境里还会因为 ELECTRON_RUN_AS_NODE 直接起不来，
+  # 等于**每次都要多打一份自己验不了的包**。
+  # 需要 Intel 版时把 x64 加回来即可，artifactName 里的 ${arch} 已经能区分。
   target:
     - target: dmg
       arch:
         - arm64
-        - x64
   artifactName: ${name}-${version}-${arch}.${ext}
 
 win:

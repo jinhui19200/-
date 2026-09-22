@@ -449,6 +449,186 @@ async function run(page, shot) {
     persisted
   )
 
+  // ── 2b-2. 仓库页搜索与导出 ───────────────────────────────
+  section('2b-2. 仓库页：搜索置顶（不隐藏其余）与导出 Excel')
+
+  const whOrder = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('tbody tr')].map((r) =>
+        r.querySelector('td')?.textContent?.trim()
+      )
+    )
+  const whHits = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('tbody tr')]
+        .filter((r) => r.classList.contains('row-hit'))
+        .map((r) => r.querySelector('td')?.textContent?.trim())
+    )
+  const clickToolbar = (text) =>
+    page.evaluate((t) => {
+      const b = [...document.querySelectorAll('.card-toolbar button')].find(
+        (x) => x.textContent.trim() === t
+      )
+      if (b) b.click()
+      return Boolean(b)
+    }, text)
+
+  const seedOrder = ['M3×8 螺丝', '贴片电阻 10kΩ', '铜线 1.5mm²', '焊锡丝 0.8mm', 'PCB 打样板', '闲置物料 X']
+  check(
+    '未搜索时是物品的原始顺序',
+    (await whOrder()).join('|') === seedOrder.join('|'),
+    (await whOrder()).join('|')
+  )
+
+  await setInput(page, '.search-input', '丝')
+  await page.waitForTimeout(250)
+  const hitOrder = await whOrder()
+  check('搜「丝」时仍显示全部 6 行（其余没被隐藏）', hitOrder.length === 6, hitOrder.join('|'))
+  check(
+    '命中的两种排到最前，未命中的保持原有相对顺序',
+    hitOrder.join('|') ===
+      ['M3×8 螺丝', '焊锡丝 0.8mm', '贴片电阻 10kΩ', '铜线 1.5mm²', 'PCB 打样板', '闲置物料 X'].join('|'),
+    hitOrder.join('|')
+  )
+  check(
+    '命中的行带 row-hit 标记（否则看不出哪几行是命中的）',
+    (await whHits()).join('|') === 'M3×8 螺丝|焊锡丝 0.8mm',
+    (await whHits()).join('|')
+  )
+  check(
+    '计数显示「匹配 2 / 共 6 种」',
+    (await countLabel(page)).includes('匹配 2 / 共 6 种'),
+    await countLabel(page)
+  )
+  await shot(page, '2b2-warehouse-search')
+
+  // 把原本排第 5 的物品顶到第一 —— 这是「置顶」最直观的用例
+  await setInput(page, '.search-input', '板')
+  await page.waitForTimeout(250)
+  const boardOrder = await whOrder()
+  check(
+    '搜「板」把原本排第 5 的 PCB 打样板顶到第一位',
+    boardOrder[0] === 'PCB 打样板' && boardOrder.length === 6,
+    boardOrder.join('|')
+  )
+  check(
+    '只有一个命中时，其余 5 种仍在下面且顺序不变',
+    boardOrder.slice(1).join('|') === 'M3×8 螺丝|贴片电阻 10kΩ|铜线 1.5mm²|焊锡丝 0.8mm|闲置物料 X',
+    boardOrder.join('|')
+  )
+
+  await setInput(page, '.search-input', 'pcb')
+  await page.waitForTimeout(250)
+  check('搜索大小写不敏感（pcb 命中 PCB）', (await whHits()).join('|') === 'PCB 打样板', (await whHits()).join('|'))
+
+  await setInput(page, '.search-input', 'zzz')
+  await page.waitForTimeout(250)
+  check('搜不到时仍显示全部 6 行（不隐藏）', (await rowCount(page)) === 6, `${await rowCount(page)}`)
+  check('搜不到时没有行被标成命中', (await whHits()).length === 0, (await whHits()).join('|'))
+  check(
+    '搜不到时计数显示「匹配 0 / 共 6 种」',
+    (await countLabel(page)).includes('匹配 0 / 共 6 种'),
+    await countLabel(page)
+  )
+  const whNote = await page.evaluate(() => document.querySelector('.search-note')?.textContent?.trim() ?? '')
+  check(
+    '搜不到时明确说明一句，而不是默默显示全部',
+    whNote.includes('没有名称包含') && whNote.includes('6 种'),
+    whNote || '(没有提示)'
+  )
+
+  check('点「清除」按钮可用', (await clickToolbar('清除')) === true)
+  await page.waitForTimeout(250)
+  check(
+    '清除后顺序复原为原始顺序',
+    (await whOrder()).join('|') === seedOrder.join('|'),
+    (await whOrder()).join('|')
+  )
+  check(
+    '清除后「清除」按钮自己消失（只在搜索时出现）',
+    (await clickToolbar('清除')) === false
+  )
+
+  // 导出 Excel。手法与第 9 节相同：预览版的 window.api 是普通对象，可以换掉
+  // exportXlsx 截下渲染进程**已经算好**的字节，再拿回 Node 用 xlsx 真解析。
+  // alert 一并换掉（导出成功会弹一个），用完还原 —— 后面几节还要靠真 dialog。
+  await page.evaluate(() => {
+    window.__origAlert = window.alert
+    window.alert = () => {}
+    window.__whExport = null
+    window.api.exportXlsx = async (data, name) => {
+      const bytes = Uint8Array.from(data)
+      let bin = ''
+      for (const b of bytes) bin += String.fromCharCode(b)
+      window.__whExport = { name, len: bytes.length, b64: btoa(bin) }
+      return { ok: true, path: '（已拦截，未真的写文件）' }
+    }
+  })
+  check('点「导出 Excel」按钮可用', (await clickToolbar('导出 Excel')) === true)
+  await page.waitForFunction(() => window.__whExport !== null, null, { timeout: 5000 }).catch(() => {})
+  const whExp = await page.evaluate(() => window.__whExport)
+  await page.evaluate(() => {
+    if (window.__origAlert) window.alert = window.__origAlert
+  })
+  check(
+    '点「导出 Excel」后渲染进程产出了字节',
+    whExp !== null && whExp.len > 0,
+    whExp ? `${whExp.name} / ${whExp.len} 字节` : '没截到'
+  )
+  check('默认文件名是「仓库台账.xlsx」', whExp?.name === '仓库台账.xlsx', String(whExp?.name))
+
+  if (whExp?.b64) {
+    const wbuf = Buffer.from(whExp.b64, 'base64')
+    check(
+      '字节以 ZIP 魔数 PK 03 04 开头（xlsx 就是 zip）',
+      wbuf[0] === 0x50 && wbuf[1] === 0x4b && wbuf[2] === 0x03 && wbuf[3] === 0x04,
+      [...wbuf.slice(0, 4)].map((b) => b.toString(16).padStart(2, '0')).join(' ')
+    )
+    const WXLSX = require('xlsx')
+    const wbW = WXLSX.read(wbuf, { type: 'buffer' })
+    check(
+      '工作表名是「仓库台账」',
+      wbW.SheetNames.length === 1 && wbW.SheetNames[0] === '仓库台账',
+      wbW.SheetNames.join(' | ')
+    )
+    const wrows = WXLSX.utils.sheet_to_json(wbW.Sheets['仓库台账'], { header: 1 })
+    check(
+      '表头为 名称/数量/单位/警戒值/本月入库（9月）/本月出库（9月）/状态',
+      JSON.stringify(wrows[0]) ===
+        JSON.stringify([
+          '名称',
+          '数量',
+          '单位',
+          '警戒值',
+          '本月入库（9月）',
+          '本月出库（9月）',
+          '状态'
+        ]),
+      JSON.stringify(wrows[0])
+    )
+    check('数据行数与仓库物品数一致（6 行 + 表头）', wrows.length - 1 === 6, `${wrows.length - 1} 行`)
+    check(
+      '数量与界面一致（螺丝 245 / 铜线 -15）',
+      wrows.slice(1).some((r) => r[0] === 'M3×8 螺丝' && r[1] === 245) &&
+        wrows.slice(1).some((r) => r[0] === '铜线 1.5mm²' && r[1] === -15),
+      JSON.stringify(wrows.slice(1).map((r) => [r[0], r[1]]))
+    )
+    // 界面上低库存是浅红底色，导出成文件后颜色没了 —— 必须落成一列文字，否则这条信息就丢了
+    check(
+      '低于警戒值的 3 种在「状态」列被标出',
+      wrows.slice(1).filter((r) => r[6] === '低于警戒值').length === 3,
+      JSON.stringify(wrows.slice(1).map((r) => [r[0], r[6]]))
+    )
+    check(
+      '未低于警戒值的行状态列为空',
+      wrows
+        .slice(1)
+        .filter((r) => ['M3×8 螺丝', '焊锡丝 0.8mm', '闲置物料 X'].includes(r[0]))
+        .every((r) => r[6] === ''),
+      JSON.stringify(wrows.slice(1).map((r) => [r[0], r[6]]))
+    )
+  }
+
   // ── 2c. 报表页：双向柱状图 ───────────────────────────────
   section('2c. 报表页：入库在上 / 出库在下')
   await switchTab(page, '报表')
@@ -651,19 +831,21 @@ async function run(page, shot) {
       outLabelled.length > 0 && outLabelled.every((b) => b.labelBox.top >= b.bottom - 1),
       JSON.stringify(outLabelled.map((b) => [b.labelBox.top, b.bottom]))
     )
-    // 最高那根柱子的标注会溢出 92px 绘图区，靠卡片头部的外边距让位 ——
-    // 有人把那段外边距调小的话，这里会失败
+    // 最高那根柱子的标注会溢出 92px 绘图区，靠卡片内控制条的下外边距让位 ——
+    // 有人把那段外边距调小的话，这里会失败。
+    // 比的是**控制条**而不是卡片头部：控制条现在紧贴在绘图区上方，
+    // 标注先撞到的是它。（早先没有控制条时比的是 .report-head）
     const topLabel = inLabelled.reduce((a, b) => (b.h > a.h ? b : a), inLabelled[0])
-    const headBottom = await page.evaluate(() => {
+    const barBottom = await page.evaluate(() => {
       const el = [...document.querySelectorAll('.report-card')].find(
         (c) => c.querySelector('.report-name')?.textContent?.trim() === 'M3×8 螺丝'
       )
-      return Math.round(el.querySelector('.report-head').getBoundingClientRect().bottom)
+      return Math.round(el.querySelector('.report-card-bar').getBoundingClientRect().bottom)
     })
     check(
-      '最高柱的标注没有压到卡片头部',
-      topLabel.labelBox.top >= headBottom,
-      `标注顶 ${topLabel.labelBox.top} vs 头部底 ${headBottom}`
+      '最高柱的标注没有压到卡片内的时间窗控制条',
+      topLabel.labelBox.top >= barBottom,
+      `标注顶 ${topLabel.labelBox.top} vs 控制条底 ${barBottom}`
     )
 
     // 柱高与数值成比例：300 的柱应约为 150 的两倍（各留 3px 舍入误差）
@@ -739,54 +921,98 @@ async function run(page, shot) {
     String(card?.idleText)
   )
 
-  // ── 2d. 时间窗口平移（左右滑动） ──────────────────────────
-  section('2d. 报表页：时间窗口左右平移')
-  const rangeText = () => page.$eval('.report-range', (e) => e.textContent.trim())
-  const btnDisabled = (label) =>
-    page.evaluate((t) => {
-      const b = [...document.querySelectorAll('.range-btn')].find((x) => x.textContent.trim() === t)
-      return b ? b.disabled : null
-    }, label)
-  const clickBtn = async (label) => {
-    await page.evaluate((t) => {
-      const b = [...document.querySelectorAll('.range-btn')].find((x) => x.textContent.trim() === t)
-      if (b) b.click()
-    }, label)
+  // ── 2d. 时间窗口平移（每张卡各自独立） ────────────────────
+  section('2d. 报表页：时间窗口左右平移（每张卡各自独立）')
+
+  /**
+   * 某张卡片的控制条状态。
+   *
+   * 全部按**卡片名**取，不按 `.report-range` 的文档顺序取 ——
+   * 顺序取法在「卡片数量或排序变了」时会静默指向另一张卡，
+   * 而报出来的错看起来像时间窗算错了，很难定位。
+   */
+  const cardBar = (name) =>
+    page.evaluate((n) => {
+      const card = [...document.querySelectorAll('.report-card')].find(
+        (c) => c.querySelector('.report-name')?.textContent?.trim() === n
+      )
+      if (!card) return null
+      const btns = [...card.querySelectorAll('.report-card-bar .range-btn')]
+      const find = (t) => btns.find((b) => b.textContent.trim() === t)
+      const earlier = find('◀ 更早')
+      const later = find('更晚 ▶')
+      return {
+        range: card.querySelector('.report-range')?.textContent?.trim() ?? '',
+        months: [...card.querySelectorAll('.plot-label')].map((e) => e.getAttribute('title')),
+        earlierDisabled: earlier ? earlier.disabled : null,
+        laterDisabled: later ? later.disabled : null,
+        hasReset: Boolean(find('回到最新')),
+        note: card.querySelector('.report-note')?.textContent?.trim() ?? null
+      }
+    }, name)
+
+  const clickCardBtn = async (name, label) => {
+    await page.evaluate(
+      ([n, t]) => {
+        const card = [...document.querySelectorAll('.report-card')].find(
+          (c) => c.querySelector('.report-name')?.textContent?.trim() === n
+        )
+        const b = [...card.querySelectorAll('.report-card-bar .range-btn')].find(
+          (x) => x.textContent.trim() === t
+        )
+        if (b) b.click()
+      },
+      [name, label]
+    )
     await page.waitForTimeout(250)
   }
 
-  check(
-    '默认区间是最近 12 个月',
-    (await rangeText()) === '统计区间：2025-10 ~ 2026-09',
-    await rangeText()
-  )
-  // 不能往未来滑 —— 右边到头了
-  check('「更晚」按钮默认禁用（不能滑向未来）', (await btnDisabled('更晚 ▶')) === true)
-  check('「更早」按钮默认可用（有更早的数据）', (await btnDisabled('◀ 更早')) === false)
+  const SCREW = 'M3×8 螺丝'
+  const RESISTOR = '贴片电阻 10kΩ'
+  const DEFAULT_RANGE = '2025-10 ~ 2026-09'
 
-  await clickBtn('◀ 更早')
-  check(
-    '点一次「更早」，区间整体前移一个月',
-    (await rangeText()) === '统计区间：2025-09 ~ 2026-08',
-    await rangeText()
-  )
-  check('平移后「更晚」按钮变为可用', (await btnDisabled('更晚 ▶')) === false)
-  check('平移后出现「回到最新」', (await btnDisabled('回到最新')) === false)
+  let screwBar = await cardBar(SCREW)
+  check('默认区间是最近 12 个月', screwBar.range === DEFAULT_RANGE, screwBar.range)
+  check('「更晚」默认禁用（不能滑向未来）', screwBar.laterDisabled === true)
+  check('「更早」默认可用（有更早的数据）', screwBar.earlierDisabled === false)
+  check('默认不显示「回到最新」', screwBar.hasReset === false)
+  check('默认没有「窗口外还有…」提示', screwBar.note === null, String(screwBar.note))
 
-  // 一直往前滑到最早一条记录所在月（种子数据最早是 2025-10-14）
-  for (let i = 0; i < 20; i++) {
-    if ((await btnDisabled('◀ 更早')) === true) break
-    await clickBtn('◀ 更早')
+  await clickCardBtn(SCREW, '◀ 更早')
+  screwBar = await cardBar(SCREW)
+  check('点一次「更早」，这张卡的区间前移一个月', screwBar.range === '2025-09 ~ 2026-08', screwBar.range)
+  check('平移后「更晚」变为可用', screwBar.laterDisabled === false)
+  check('平移后出现「回到最新」', screwBar.hasReset === true)
+  check(
+    '出现「窗口外还有 N 个月的记录」提示（两侧都算）',
+    /^窗口外还有 \d+ 个月的记录$/.test(screwBar.note ?? ''),
+    String(screwBar.note)
+  )
+
+  // ★ 这一条是本次改动的核心：另一张卡必须**完全不受影响**。
+  // 早先所有卡片共用一个窗口，拖一张等于拖全部 —— 断言就是盯着这个回归。
+  const resBar0 = await cardBar(RESISTOR)
+  check(
+    '★ 另一张卡（贴片电阻）的区间纹丝不动 —— 各卡窗口相互独立',
+    resBar0.range === DEFAULT_RANGE && resBar0.hasReset === false && resBar0.laterDisabled === true,
+    `区间=${resBar0.range} 回到最新=${resBar0.hasReset} 更晚禁用=${resBar0.laterDisabled}`
+  )
+
+  // 一直往前滑到**这个物品**最早一条记录所在月（螺丝最早是 2025-10-14）
+  for (let i = 0; i < 30; i++) {
+    if ((await cardBar(SCREW)).earlierDisabled === true) break
+    await clickCardBtn(SCREW, '◀ 更早')
   }
-  // 可滑范围 = 最早记录所在月到当前月 = 2025-10 ~ 2026-09 共 11 步。
+  screwBar = await cardBar(SCREW)
+  // 可滑范围 = 该物品最早记录所在月到当前月 = 2025-10 ~ 2026-09 共 11 步。
   // 滑到头时窗口是 2024-11 ~ 2025-10，最早那条记录正好落在窗口末月
   check(
-    '滑到最早数据处即停住（不会滑进全是空白的窗口）',
-    (await btnDisabled('◀ 更早')) === true && (await rangeText()) === '统计区间：2024-11 ~ 2025-10',
-    await rangeText()
+    '滑到该物品最早数据处即停住（不会滑进全是空白的窗口）',
+    screwBar.earlierDisabled === true && screwBar.range === '2024-11 ~ 2025-10',
+    screwBar.range
   )
   // 停住之后图表里应该真的能看到最早那条数据 —— 否则「滑到位」是假的
-  const slid = await reportCard('M3×8 螺丝')
+  const slid = await reportCard(SCREW)
   check(
     '滑到最早处时 2025-10 入库 200 仍在窗口内',
     barAt(slid, '2025-10', 'in')?.title === '2025-10 入库 200',
@@ -798,29 +1024,47 @@ async function run(page, shot) {
     String(barAt(slid, '2026-09', 'in'))
   )
 
-  await clickBtn('回到最新')
+  await clickCardBtn(SCREW, '回到最新')
+  screwBar = await cardBar(SCREW)
   check(
-    '「回到最新」把区间复位',
-    (await rangeText()) === '统计区间：2025-10 ~ 2026-09' && (await btnDisabled('更晚 ▶')) === true,
-    await rangeText()
+    '「回到最新」把这张卡复位',
+    screwBar.range === DEFAULT_RANGE && screwBar.laterDisabled === true && screwBar.hasReset === false,
+    screwBar.range
   )
 
-  // 拖动：往右拖应当看到更早的数据（和拖动地图的方向一致）
-  const gridBox = await page.$eval('.report-grid', (el) => {
-    const r = el.getBoundingClientRect()
+  // ★ 可滑范围也必须按各自的记录算。
+  // 「闲置物料 X」一条记录都没有 → 一步都滑不动。
+  // 若沿用全局可滑范围（早先的写法），它照样能被滑到十几年前的空白窗口。
+  const idleBar = await cardBar('闲置物料 X')
+  check(
+    '★ 没有任何记录的物品「更早」直接禁用（可滑范围按各自的记录算）',
+    idleBar.earlierDisabled === true && idleBar.hasReset === false,
+    JSON.stringify(idleBar)
+  )
+
+  // 拖动：往右拖应当看到更早的数据（和拖动地图的方向一致）。
+  // 拖的是**这一张卡**的绘图区。
+  const plotBox = await page.evaluate((n) => {
+    const card = [...document.querySelectorAll('.report-card')].find(
+      (c) => c.querySelector('.report-name')?.textContent?.trim() === n
+    )
+    const r = card.querySelector('.report-plot').getBoundingClientRect()
     return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 40) }
-  })
-  await page.mouse.move(gridBox.x, gridBox.y)
+  }, SCREW)
+  await page.mouse.move(plotBox.x, plotBox.y)
   await page.mouse.down()
-  await page.mouse.move(gridBox.x + 130, gridBox.y, { steps: 8 })
+  await page.mouse.move(plotBox.x + 130, plotBox.y, { steps: 8 })
   await page.mouse.up()
   await page.waitForTimeout(300)
+  screwBar = await cardBar(SCREW)
+  check('在螺丝卡片上往右拖 130px ≈ 前移 2 个月', screwBar.range === '2025-08 ~ 2026-07', screwBar.range)
+  const resBar1 = await cardBar(RESISTOR)
   check(
-    '往右拖动 130px ≈ 前移 2 个月',
-    (await rangeText()) === '统计区间：2025-08 ~ 2026-07',
-    await rangeText()
+    '★ 拖动之后另一张卡仍未受影响',
+    resBar1.range === DEFAULT_RANGE,
+    resBar1.range
   )
-  await clickBtn('回到最新')
+  await clickCardBtn(SCREW, '回到最新')
 
   await shot(page, '2c-reports')
   await switchTab(page, '仓库')
@@ -834,13 +1078,22 @@ async function run(page, shot) {
   check('页面上有且只有一个表格', tables.length === 1, `${tables.length}`)
   cols = tables[0]
   check(
-    '表头为 时间/名称/数量/单位/操作人/类型/操作',
-    cols.map((c) => c.head).join('|') === '时间|名称|数量|单位|操作人|类型|操作',
+    '表头为 时间/名称/数量/单位/操作人/经手人/领取人/类型/操作',
+    cols.map((c) => c.head).join('|') === '时间|名称|数量|单位|操作人|经手人/领取人|类型|操作',
     cols.map((c) => c.head).join('|')
   )
   check('没有空表头（历史缺陷：按钮列没有表头）', cols.every((c) => c.head !== ''))
-  check('「类型」压在 出库/入库 标签上', cols[5].data === '出库', cols[5].data)
-  check('「操作」压在 撤销 按钮上', cols[6].data === '撤销', cols[6].data)
+  // 按表头名取列，不按下标 —— 加「经手人/领取人」这一列时，
+  // 原来的 cols[5] / cols[6] 会静默指向别的列，报出来却是「内容不对」
+  const colByHead = (h) => cols.find((c) => c.head === h)
+  check('「类型」压在 出库/入库 标签上', colByHead('类型')?.data === '出库', colByHead('类型')?.data)
+  check('「操作」压在 撤销 按钮上', colByHead('操作')?.data === '撤销', colByHead('操作')?.data)
+  check(
+    '「经手人/领取人」紧跟在「操作人」之后',
+    cols.findIndex((c) => c.head === '经手人/领取人') ===
+      cols.findIndex((c) => c.head === '操作人') + 1,
+    cols.map((c) => c.head).join('|')
+  )
   for (const c of cols) {
     check(`「${c.head}」表头与数据对齐`, Math.abs(c.edgeDelta) <= 2, `差 ${c.edgeDelta}px`)
   }
@@ -849,6 +1102,24 @@ async function run(page, shot) {
     cols.filter((c) => !c.isLast).every((c) => c.thBorderRight === 1 && c.tdBorderRight === 1)
   )
   check('记录页共 33 条种子数据', (await rowCount(page)) === 33, `${await rowCount(page)}`)
+
+  // 种子里前几条刻意带了经手人 / 领取人。不验一下的话，这一列全空也照样「通过」。
+  const handlerCells = await page.evaluate(() => {
+    const ths = [...document.querySelector('table.table').querySelectorAll('thead th')]
+    const i = ths.findIndex((th) => th.textContent.trim() === '经手人/领取人')
+    return [...document.querySelectorAll('tbody tr')]
+      .slice(0, 8)
+      .map((row) => row.querySelectorAll('td')[i]?.textContent?.trim())
+  })
+  check(
+    '「经手人/领取人」列取到了值（不是整列空）',
+    handlerCells.some((v) => v && v !== '—'),
+    handlerCells.join(',')
+  )
+  check('入库记录的经手人显示为 赵六', handlerCells.includes('赵六'), handlerCells.join(','))
+  check('出库记录的领取人显示为 孙八', handlerCells.includes('孙八'), handlerCells.join(','))
+  check('出库记录的领取人显示为 周九', handlerCells.includes('周九'), handlerCells.join(','))
+  check('未填的记录显示 —', handlerCells.includes('—'), handlerCells.join(','))
   await shot(page, '2-records')
 
   // ── 4. 名称 / 类型筛选 ───────────────────────────────────
@@ -956,16 +1227,22 @@ async function run(page, shot) {
     )
   )
   check(
-    '入库表单五个输入框等宽（历史缺陷：名称/操作人在定位容器里没撑满）',
-    new Set(formWidths[0]).size === 1,
+    '入库表单六个输入框等宽（历史缺陷：名称/操作人在定位容器里没撑满）',
+    formWidths[0].length === 6 && new Set(formWidths[0]).size === 1,
     formWidths[0].join(', ')
   )
-  check('出库表单五个输入框等宽', new Set(formWidths[1]).size === 1, formWidths[1].join(', '))
+  check(
+    '出库表单六个输入框等宽',
+    formWidths[1].length === 6 && new Set(formWidths[1]).size === 1,
+    formWidths[1].join(', ')
+  )
 
   const inForm = page.locator('.tx-form').first()
+  const outForm = page.locator('.tx-form').nth(1)
   const nameInput = inForm.locator('input[type="text"]').nth(0)
   const unitInput = inForm.locator('input[type="text"]').nth(1)
   const opInput = inForm.locator('input[type="text"]').nth(2)
+  const handlerInput = inForm.locator('input[type="text"]').nth(3)
   const qtyInput = inForm.locator('input[type="number"]')
   const submitBtn = inForm.locator('button[type="submit"]')
 
@@ -978,19 +1255,74 @@ async function run(page, shot) {
   check('单位标签显示「（已锁定）」', lockHint.includes('已锁定'), lockHint)
 
   // 6b 操作人补全
+  // 补全提示必须**按表单取**：操作页两个表单同时在 DOM 里，
+  // 用 document 全局查会把另一个表单的提示也收进来，
+  // 「出库不该建议入库经手人」这类断言就会假失败。
+  const formSuggestions = (idx) =>
+    page.evaluate((i) => {
+      const f = document.querySelectorAll('.tx-form')[i]
+      return [...f.querySelectorAll('.tx-suggestion')].map((b) => b.textContent.trim())
+    }, idx)
+
   await opInput.fill('张')
   await page.waitForTimeout(250)
-  let suggestions = await page.evaluate(() =>
-    [...document.querySelectorAll('.tx-suggestion')].map((b) => b.textContent.trim())
-  )
+  let suggestions = await formSuggestions(0)
   check('操作人输入「张」→ 提示含「张三」', suggestions.includes('张三'), suggestions.join(',') || '(无提示)')
   await opInput.fill('张三')
   await page.waitForTimeout(250)
-  suggestions = await page.evaluate(() =>
-    [...document.querySelectorAll('.tx-suggestion')].map((b) => b.textContent.trim())
-  )
+  suggestions = await formSuggestions(0)
   check('已输入完整姓名后不再推荐自身（历史缺陷）', !suggestions.includes('张三'), suggestions.join(',') || '(无提示)')
   await opInput.fill('')
+
+  // 6b-2 经手人 / 领取人（新增字段，与操作人并存）
+  const inLabels = await page.evaluate(() =>
+    [...document.querySelectorAll('.tx-form')[0].querySelectorAll('.tx-field label')].map((l) =>
+      l.textContent.trim()
+    )
+  )
+  const outLabels = await page.evaluate(() =>
+    [...document.querySelectorAll('.tx-form')[1].querySelectorAll('.tx-field label')].map((l) =>
+      l.textContent.trim()
+    )
+  )
+  check(
+    '入库表单标签是「经手人」',
+    inLabels.includes('经手人') && !inLabels.includes('领取人'),
+    inLabels.join('|')
+  )
+  check(
+    '出库表单标签是「领取人」',
+    outLabels.includes('领取人') && !outLabels.includes('经手人'),
+    outLabels.join('|')
+  )
+  check('两个表单都保留了「操作人」这一格（并存，不是替换）', inLabels.includes('操作人') && outLabels.includes('操作人'), inLabels.join('|'))
+
+  // 补全只在本方向的记录里找：入库建议历来的经手人，出库建议历来的领取人
+  await handlerInput.fill('赵')
+  await page.waitForTimeout(250)
+  const inHandlerSug = await formSuggestions(0)
+  check('入库的经手人输入「赵」→ 提示含「赵六」', inHandlerSug.includes('赵六'), inHandlerSug.join(',') || '(无提示)')
+
+  const outHandlerInput = outForm.locator('input[type="text"]').nth(3)
+  await outHandlerInput.fill('孙')
+  await page.waitForTimeout(250)
+  const outHandlerSug = await formSuggestions(1)
+  check('出库的领取人输入「孙」→ 提示含「孙八」', outHandlerSug.includes('孙八'), outHandlerSug.join(',') || '(无提示)')
+  // 反向：出库表单不该建议入库的经手人（两个角色不互相串）。
+  // 注意查的是**出库那个表单内部**的提示 —— 入库表单此时还留着「赵」，
+  // 全局查会把它自己的提示也算进来。
+  check(
+    '出库的领取人补全里没有入库的经手人「赵六」（两个角色不串）',
+    !outHandlerSug.includes('赵六'),
+    outHandlerSug.join(',') || '(无提示)'
+  )
+  await outHandlerInput.fill('')
+  await handlerInput.fill('')
+
+  // 入库表单填上经手人，后面的提交会把它带进记录
+  await handlerInput.fill('赵六')
+  await page.waitForTimeout(200)
+  check('经手人输入框取到了「赵六」', (await handlerInput.inputValue()) === '赵六', await handlerInput.inputValue())
 
   // 6c 新物品自动建立
   await nameInput.fill('排针 2.54mm')
@@ -1001,6 +1333,11 @@ async function run(page, shot) {
   await submitBtn.click()
   await page.waitForTimeout(600)
   check('提交后表单清空名称', (await nameInput.inputValue()) === '', await nameInput.inputValue())
+  check(
+    '提交后经手人**保留**（同一批货通常由同一个人经手，不必每次重填）',
+    (await handlerInput.inputValue()) === '赵六',
+    await handlerInput.inputValue()
+  )
   await switchTab(page, '仓库')
   await page.waitForTimeout(400)
   check('仓库页物品数 6 → 7', (await rowCount(page)) === 7, `${await rowCount(page)}`)
@@ -1017,8 +1354,15 @@ async function run(page, shot) {
   check('铜线当前库存 -15（负数高亮）', before?.['数量'] === '-15', rowText(before))
   await switchTab(page, '操作')
   await page.waitForTimeout(300)
+  // 切页签会让表单重新挂载，所以「保留经手人」只在同一次挂载内成立 —— 这里重新填
+  check(
+    '切页签后表单重新挂载，经手人回到空白（保留只限同一次挂载内）',
+    (await handlerInput.inputValue()) === '',
+    await handlerInput.inputValue()
+  )
   await nameInput.fill('铜线 1.5mm²')
   await qtyInput.fill('45')
+  await handlerInput.fill('赵六')
   await page.waitForTimeout(200)
   await submitBtn.click()
   await page.waitForTimeout(600)
@@ -1052,13 +1396,38 @@ async function run(page, shot) {
       firstRow?.['类型'] === '入库',
     rowText(firstRow)
   )
+  // 界面填的经手人必须真的落到记录里（走的是 渲染进程 → IPC → 磁盘 这条完整链路）
+  check(
+    '界面填的经手人「赵六」落进了记录',
+    firstRow?.['经手人/领取人'] === '赵六',
+    rowText(firstRow)
+  )
+
+  // 撤销确认之后代码还会弹一个「库存变为负数」的 alert，它同样是一条 dialog，
+  // 于是 `dialogs.at(-1)` 指向的是那个 alert 而不是确认框。
+  // 要断言确认框的内容，就得按类型把 confirm 挑出来。
+  const lastConfirm = () => [...dialogs].reverse().find((d) => d.type === 'confirm')
 
   await page.evaluate(() => {
     ;[...document.querySelectorAll('tbody tr')][0].querySelector('button').click()
   })
   await page.waitForTimeout(800)
-  check('弹出确认框', dialogs.some((d) => d.message.includes('确定撤销这条记录')), JSON.stringify(dialogs.at(-1) ?? {}))
-  check('确认框写明了记录内容与操作人', dialogs.at(-1)?.message.includes('铜线 1.5mm²') === true, dialogs.at(-1)?.message.replace(/\s+/g, ' '))
+  check(
+    '弹出确认框（内容是撤销确认，不是那个库存告警）',
+    lastConfirm()?.message.includes('确定撤销这条记录') === true,
+    JSON.stringify(dialogs.at(-1) ?? {})
+  )
+  check(
+    '确认框写明了记录内容与操作人',
+    lastConfirm()?.message.includes('铜线 1.5mm²') === true,
+    lastConfirm()?.message.replace(/\s+/g, ' ')
+  )
+  // 撤销是反向冲销库存的破坏性操作，确认框里要能看出「货交给了谁」
+  check(
+    '确认框里带上了经手人（入库用「经手人」这个叫法）',
+    lastConfirm()?.message.includes('经手人：赵六') === true,
+    lastConfirm()?.message.replace(/\s+/g, ' ')
+  )
   check('记录数回到 34（只撤销掉那一条）', (await rowCount(page)) === 34, `${await rowCount(page)}`)
   await switchTab(page, '仓库')
   await page.waitForTimeout(400)
@@ -1173,12 +1542,20 @@ async function run(page, shot) {
     check('能被 xlsx 解析出唯一工作表「出入库记录」',
       wb.SheetNames.length === 1 && wb.SheetNames[0] === '出入库记录', wb.SheetNames.join(' | '))
     const rows = XLSX.utils.sheet_to_json(wb.Sheets['出入库记录'], { header: 1 })
-    check('表头为 时间/名称/数量/单位/操作人/类型',
-      JSON.stringify(rows[0]) === JSON.stringify(['时间', '名称', '数量', '单位', '操作人', '类型']),
+    check('表头为 时间/名称/数量/单位/操作人/经手人/领取人/类型',
+      JSON.stringify(rows[0]) ===
+        JSON.stringify(['时间', '名称', '数量', '单位', '操作人', '经手人/领取人', '类型']),
       JSON.stringify(rows[0]))
     check('数据行数与界面上的记录数一致（表头之外）', rows.length - 1 === exportRows,
       `表里 ${rows.length - 1} 行 / 界面 ${exportRows} 行`)
     check('导出的是全部记录，不是空表', rows.slice(1).some((r) => typeof r[1] === 'string' && r[1].length > 0))
+    // 交接人这一列要真带上值：界面里填过「赵六」，导出不该变成一列「—」
+    const hCol = rows[0].indexOf('经手人/领取人')
+    check(
+      '导出的「经手人/领取人」列带上了实际值（含赵六）',
+      rows.slice(1).some((r) => r[hCol] === '赵六'),
+      JSON.stringify([...new Set(rows.slice(1).map((r) => r[hCol]))].slice(0, 6))
+    )
   }
 
   // ── 10. 控制台 ───────────────────────────────────────────

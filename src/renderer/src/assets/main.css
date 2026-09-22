@@ -16,6 +16,13 @@
   --warn-bg: #fdeceb;
   --warn-fg: #c0392b;
   --warn-row: #fff8f7;
+  /*
+   * 搜索命中的行：浅蓝底。
+   * 刻意避开红/橙 —— 那两个色已经被「负库存」和「低于警戒值」占了，
+   * 命中是中性信息，用同色系会让人以为这些物品也出了问题。
+   */
+  --hit-bg: #e9f0fe;
+  --hit-row: #f8faff;
 }
 
 * {
@@ -251,6 +258,44 @@ body {
 
 .count-warn {
   color: var(--warn-fg);
+}
+
+/* ===== 仓库页搜索：命中行置顶并加底色 ===== */
+/*
+ * 这段必须排在 .row-low 规则**之后**：两者选择器权重相同，
+ * 靠先后顺序决定命中行底色压过低库存行底色。挪到前面去就会被覆盖掉。
+ */
+.table tbody tr.row-hit td {
+  background: var(--hit-row);
+}
+
+/* 名称那一格单独加深一档 —— 「排到前面」看不出是哪几行命中的，得有个视觉标记 */
+.table tbody tr.row-hit td:first-child {
+  background: var(--hit-bg);
+  font-weight: 600;
+}
+
+/* 低库存的红色更紧急，命中行里的数量格保持红底不变 */
+.table tbody tr.row-hit td.below-threshold {
+  background: var(--warn-bg);
+}
+
+.table tbody tr.row-hit:hover td {
+  background: #eff5ff;
+}
+
+.table tbody tr.row-hit:hover td:first-child {
+  background: var(--hit-bg);
+}
+
+.table tbody tr.row-hit:hover td.below-threshold {
+  background: var(--warn-bg);
+}
+
+.search-note {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-muted);
 }
 
 /* 警戒值输入框：平时长得像纯文本，鼠标移上去/聚焦才显出可编辑 */
@@ -502,8 +547,8 @@ body {
   margin-top: 4px;
 }
 
-/* ===== 记录页工具栏 ===== */
-.records-header {
+/* ===== 卡片头部 + 工具条（记录页、仓库页共用） ===== */
+.card-header {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -511,11 +556,11 @@ body {
   margin-bottom: 16px;
 }
 
-.records-header h2 {
+.card-header h2 {
   margin: 0;
 }
 
-.records-toolbar {
+.card-toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -693,16 +738,7 @@ body {
   color: var(--warn-fg);
 }
 
-/* 时间窗口工具条：更早 / 区间 / 更晚 / 回到最新 */
-.report-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 14px;
-  font-size: 12px;
-}
-
+/* 时间窗控制条现在在**每张卡片内部**（各卡窗口独立），页面级已无共用工具条 */
 .range-btn {
   padding: 4px 10px;
   border: 1px solid var(--border);
@@ -711,6 +747,12 @@ body {
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
+}
+
+/* 卡片内的控制条要更紧凑：卡片最小宽度只有 520px，还要并排放「更早 / 区间 / 更晚」 */
+.range-btn-sm {
+  padding: 2px 7px;
+  font-size: 11px;
 }
 
 .range-btn:hover:not(:disabled) {
@@ -734,21 +776,14 @@ body {
  * 窗口是 12 个月，每张卡要分 12 列。340px 时每列只有约 23px，
  * 而「1200」这种四位数标注本身就有约 22px 宽，相邻两个月的标注会叠在一起。
  * 520px 时每列约 38px，留得下。
+ *
+ * 拖动平移现在挂在**每张卡片的 .report-plot 上**（各卡独立），
+ * 这里不再设 grab 光标与 touch-action。
  */
 .report-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
   gap: 14px;
-  /* 按住图表左右拖动可以平移时间窗口。grab 光标提示「这里可以拖」 */
-  cursor: grab;
-  /* 横向手势归我们处理（用来平移窗口），纵向留给页面滚动 */
-  touch-action: pan-y;
-}
-
-/* 拖动过程中禁掉文字选中，否则拖着拖着会把物品名选成蓝色 */
-.report-grid.dragging {
-  cursor: grabbing;
-  user-select: none;
 }
 
 .report-card {
@@ -762,10 +797,25 @@ body {
   display: flex;
   align-items: baseline;
   gap: 8px;
-  /* 不只是排版留白：入库柱的数值标注标在柱子**上方**，最高那根（满刻度）
-     的标注会溢出 92px 的绘图区约 12px。这段外边距就是给它留的位置。
-     改小会导致最高柱的标注压到物品名上（verify-ui 有断言盯着）。 */
+  /* 最高柱标注的溢出空间改由下面的 .report-card-bar 承担，这里只留一点间隔 */
+  margin-bottom: 10px;
+}
+
+/*
+ * 卡片自己的时间窗控制条。
+ *
+ * margin-bottom 不是普通留白：入库柱的数值标注标在柱子**上方**，
+ * 最高那根（满刻度）的标注会溢出 92px 的绘图区约 12px。
+ * 这段外边距就是给它留的位置 —— 改小会让标注压到「更早 / 更晚」按钮上。
+ */
+.report-card-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
   margin-bottom: 22px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .report-name {
@@ -809,6 +859,17 @@ body {
   grid-template-rows: 92px 1px 92px auto;
   /* 让「近 N 个月无出入库」这句能盖在绘图区正中 */
   position: relative;
+  /* 按住这张图左右拖动可以平移**它自己的**时间窗口（各卡互不影响）。
+     grab 光标提示「这里可以拖」 */
+  cursor: grab;
+  /* 横向手势归我们处理（用来平移窗口），纵向留给页面滚动 */
+  touch-action: pan-y;
+}
+
+/* 拖动过程中禁掉文字选中，否则拖着拖着会把物品名选成蓝色 */
+.report-plot.dragging {
+  cursor: grabbing;
+  user-select: none;
 }
 
 /*

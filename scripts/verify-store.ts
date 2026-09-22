@@ -11,7 +11,17 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDataFilePath, getLoadReport, getSnapshot, initStore, load } from '../src/main/store/db'
 import { applyTransaction, deleteRecord, setItemThreshold } from '../src/main/store/transactions'
-import { DEFAULT_THRESHOLD, monthDiff, monthLabel, monthlySeries, recentMonths } from '../src/shared/utils'
+import {
+  DEFAULT_THRESHOLD,
+  HANDLER_COLUMN,
+  handlerLabel,
+  matchesItemQuery,
+  monthDiff,
+  monthLabel,
+  monthlySeries,
+  pinMatches,
+  recentMonths
+} from '../src/shared/utils'
 
 let passed = 0
 let failed = 0
@@ -44,6 +54,7 @@ async function main(): Promise<void> {
     quantity: 100,
     unit: '个',
     operator: '张三',
+    handler: '赵六',
     type: 'in'
   })
   check('入库成功', r.ok === true, r.ok ? '' : r.error)
@@ -53,6 +64,7 @@ async function main(): Promise<void> {
     check('记录方向 = in', r.record.type === 'in')
     check('记录单位存的是快照', r.record.unit === '个')
     check('操作人快照 = 张三', r.record.operator === '张三')
+    check('经手人快照 = 赵六', r.record.handler === '赵六', `实际 ${JSON.stringify(r.record.handler)}`)
   }
 
   section('2. 同一物品再次入库应累加')
@@ -236,7 +248,7 @@ async function main(): Promise<void> {
   // 清理：把好的写回去，避免影响后续用例
   await writeFile(target, goodContent)
 
-  section('16. 旧数据无 operator 字段时自动补空串')
+  section('16. 旧数据无 operator / handler 字段时自动补空串')
   const legacy = JSON.stringify({
     version: 1,
     items: [{ id: '1', name: ' legacy', unit: '个', quantity: 10, createdAt: 'x', updatedAt: 'x' }],
@@ -248,6 +260,13 @@ async function main(): Promise<void> {
   await load()
   const legacyRec = getSnapshot().records[0]
   check('旧记录 operator 被补成空串', legacyRec.operator === '', `实际 ${JSON.stringify(legacyRec.operator)}`)
+  // handler 是比 operator 更晚加的字段，同一批旧数据里两个都没有。
+  // 不补齐的话，记录页那一列会渲染出 `undefined`、导出会写出空单元格。
+  check(
+    '旧记录 handler 也被补成空串',
+    legacyRec.handler === '',
+    `实际 ${JSON.stringify(legacyRec.handler)}`
+  )
   // 警戒值是后加的功能，旧数据文件里没有这个字段
   const legacyItem = getSnapshot().items[0]
   check(
@@ -392,9 +411,109 @@ async function main(): Promise<void> {
     )
   }
 
+  section('20. 经手人 / 领取人（与操作人并存，互不覆盖）')
+  initStore(dir)
+  await load()
+  const hIn = await applyTransaction({
+    time: '2026-09-20T09:00',
+    name: 'M3螺丝',
+    quantity: 5,
+    operator: '操作员甲',
+    // 故意带两侧空白：数据层应当裁掉再存
+    handler: '  经手人乙  ',
+    type: 'in'
+  })
+  check(
+    '入库：经手人与操作人各自存下，互不覆盖（且两侧空白被裁掉）',
+    hIn.ok && hIn.record.handler === '经手人乙' && hIn.record.operator === '操作员甲',
+    hIn.ok ? JSON.stringify({ h: hIn.record.handler, o: hIn.record.operator }) : hIn.error
+  )
+  const hOut = await applyTransaction({
+    time: '2026-09-20T10:00',
+    name: 'M3螺丝',
+    quantity: 2,
+    operator: '操作员甲',
+    handler: '领取人丙',
+    type: 'out'
+  })
+  check(
+    '出库：同一个字段装领取人，方向不同而已',
+    hOut.ok && hOut.record.handler === '领取人丙' && hOut.record.type === 'out',
+    hOut.ok ? JSON.stringify(hOut.record.handler) : hOut.error
+  )
+
+  // 选填：不传 handler 时必须是空串，而不是 undefined ——
+  // 记录页那一列、导出的单元格、撤销确认框都直接读它
+  const hNone = await applyTransaction({
+    time: '2026-09-20T11:00',
+    name: 'M3螺丝',
+    quantity: 1,
+    type: 'in'
+  })
+  check(
+    '不填经手人时存空串（不是 undefined）',
+    hNone.ok && hNone.record.handler === '',
+    hNone.ok ? JSON.stringify(hNone.record.handler) : hNone.error
+  )
+
+  // 落盘校验：重新从磁盘读一遍，而不是信内存
+  const diskHandler = JSON.parse(await readFile(getDataFilePath(), 'utf8'))
+  check(
+    '经手人已落盘',
+    diskHandler.records.some(
+      (x: { handler?: string }) => x.handler === '经手人乙'
+    ),
+    JSON.stringify(diskHandler.records.slice(-3).map((x: { handler?: string }) => x.handler))
+  )
+
+  section('21. 仓库页搜索：命中置顶但其余不隐藏')
+  const items = [
+    { name: 'M3×8 螺丝' },
+    { name: '贴片电阻 10kΩ' },
+    { name: 'M4 螺丝' },
+    { name: '铜线 1.5mm²' }
+  ]
+  const names = (list: Array<{ name: string }>): string => list.map((x) => x.name).join('|')
+
+  check(
+    '空搜索词时原样返回（连顺序都不动）',
+    names(pinMatches(items, (i) => i.name, '')) === names(items) &&
+      pinMatches(items, (i) => i.name, '') === items,
+    names(pinMatches(items, (i) => i.name, ''))
+  )
+  const hit = pinMatches(items, (i) => i.name, '螺丝')
+  check(
+    '命中的两个排到最前，且**一个都没被隐藏**',
+    hit.length === items.length && names(hit) === 'M3×8 螺丝|M4 螺丝|贴片电阻 10kΩ|铜线 1.5mm²',
+    names(hit)
+  )
+  check(
+    '命中的两个保持原有相对顺序（稳定，不是随机重排）',
+    names(hit).indexOf('M3×8 螺丝') < names(hit).indexOf('M4 螺丝'),
+    names(hit)
+  )
+  check(
+    '未命中的也保持原有相对顺序',
+    names(hit).indexOf('贴片电阻 10kΩ') < names(hit).indexOf('铜线 1.5mm²'),
+    names(hit)
+  )
+  check('无命中时返回原顺序（不是空数组）', names(pinMatches(items, (i) => i.name, 'zzz')) === names(items))
+  check('大小写不敏感', matchesItemQuery('PCB 打样板', 'pcb') === true)
+  check('忽略搜索词首尾空白', matchesItemQuery('M3×8 螺丝', '  螺丝  ') === true)
+  check('空搜索词不匹配任何项（否则全部会被标成命中）', matchesItemQuery('任何名称', '') === false)
+  check('只按名称匹配，不匹配单位', matchesItemQuery('M3×8 螺丝', '个') === false)
+
+  section('22. 经手人 / 领取人的文案')
+  check('入库叫经手人', handlerLabel('in') === '经手人', handlerLabel('in'))
+  check('出库叫领取人', handlerLabel('out') === '领取人', handlerLabel('out'))
+  check(
+    '列名同时含两种叫法（一条记录非入即出，共用一个字段）',
+    HANDLER_COLUMN === '经手人/领取人',
+    HANDLER_COLUMN
+  )
+
   await rm(dir, { recursive: true, force: true })
   await rm(legacyDir, { recursive: true, force: true })
-
   console.log(`\n${'='.repeat(52)}`)
   console.log(`通过 ${passed} 项，失败 ${failed} 项`)
   if (failed > 0) {

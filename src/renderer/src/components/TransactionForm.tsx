@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Item, StockRecord, TransactionInput } from '@shared/types'
-import { normalizeName, toLocalDateTime } from '@shared/utils'
+import { handlerLabel, normalizeName, toLocalDateTime } from '@shared/utils'
 
 interface Props {
   type: 'in' | 'out'
@@ -10,6 +10,34 @@ interface Props {
   initialName?: string
   onSubmit: (input: TransactionInput) => Promise<void> | void
   onCancel?: () => void
+}
+
+/**
+ * 从历史记录里取补全建议：包含输入内容、去重、排除与输入完全相同的项、最多 6 条。
+ *
+ * `type` 传了就只在该方向的记录里找 —— 「经手人」和「领取人」在业务上是两个角色
+ * （一个把货交出去、一个把货领走），拿领取人的名字去建议经手人会让用户选错。
+ */
+function suggestionsFrom(
+  records: StockRecord[],
+  field: 'operator' | 'handler',
+  term: string,
+  type?: 'in' | 'out'
+): string[] {
+  const t = term.trim()
+  if (!t) return []
+  const seen = new Set<string>()
+  const list: string[] = []
+  for (const r of records) {
+    if (type && r.type !== type) continue
+    const v = r[field]
+    if (v && v.includes(t) && v !== t && !seen.has(v)) {
+      seen.add(v)
+      list.push(v)
+      if (list.length >= 6) break
+    }
+  }
+  return list
 }
 
 export function TransactionForm({
@@ -35,6 +63,7 @@ export function TransactionForm({
   const [quantity, setQuantity] = useState('')
   const [unit, setUnit] = useState('')
   const [operator, setOperator] = useState('')
+  const [handler, setHandler] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState('')
 
@@ -57,20 +86,17 @@ export function TransactionForm({
   }, [items, name, matchedItem])
 
   // 操作人自动补全建议（去重，只取最近用过的；排除与已输入完全相同的项）
-  const operatorSuggestions = useMemo(() => {
-    const term = operator.trim()
-    if (!term) return []
-    const seen = new Set<string>()
-    const list: string[] = []
-    for (const r of records) {
-      if (r.operator && r.operator.includes(term) && r.operator !== term && !seen.has(r.operator)) {
-        seen.add(r.operator)
-        list.push(r.operator)
-        if (list.length >= 6) break
-      }
-    }
-    return list
-  }, [records, operator])
+  const operatorSuggestions = useMemo(
+    () => suggestionsFrom(records, 'operator', operator),
+    [records, operator]
+  )
+
+  // 经手人 / 领取人的补全建议。只在本方向的记录里找：入库建议历来的经手人，
+  // 出库建议历来的领取人 —— 两个角色不该互相串。
+  const handlerSuggestions = useMemo(
+    () => suggestionsFrom(records, 'handler', handler, type),
+    [records, handler, type]
+  )
 
   // 单位锁定：物品已存在时强制用 item.unit
   useEffect(() => {
@@ -109,9 +135,10 @@ export function TransactionForm({
         quantity: Number(quantity),
         unit: unit.trim(),
         operator: operator.trim(),
+        handler: handler.trim(),
         type
       })
-      // 提交成功清空表单（保留操作人，减少重复输入）
+      // 提交成功清空表单（保留操作人与经手人/领取人，减少重复输入）
       setTime(toLocalDateTime())
       setTimeEdited(false)
       setName('')
@@ -227,8 +254,41 @@ export function TransactionForm({
         </div>
       </div>
 
-      {error && <p className="tx-error">{error}</p>}
+      {/*
+        经手人（入库）/ 领取人（出库）。标签由 handlerLabel(type) 统一给出 ——
+        表单、记录列表表头、导出 Excel 的列名都取自同一处定义，改文案不会漏。
+      */}
+      <div className="tx-field">
+        <label>{handlerLabel(type)}</label>
+        <div className="tx-input-wrap">
+          <input
+            type="text"
+            className="tx-handler-input"
+            value={handler}
+            onChange={(e) => setHandler(e.target.value)}
+            placeholder={
+              type === 'in' ? '选填，输入经手人姓名' : '选填，输入领取人姓名'
+            }
+            autoComplete="off"
+          />
+          {handlerSuggestions.length > 0 && (
+            <div className="tx-suggestions">
+              {handlerSuggestions.map((s) => (
+                <button
+                  key={s}
+                  type="button"
+                  className="tx-suggestion"
+                  onClick={() => setHandler(s)}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
 
+      {error && <p className="tx-error">{error}</p>}
       <div className="tx-actions">
         {onCancel && (
           <button type="button" className="btn btn-ghost" onClick={onCancel}>

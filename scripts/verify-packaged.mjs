@@ -130,7 +130,7 @@ async function switchTab(page, t) {
   await sleep(350)
 }
 
-async function submitViaUi(page, { type = 'in', name, quantity, unit, operator }) {
+async function submitViaUi(page, { type = 'in', name, quantity, unit, operator, handler }) {
   await switchTab(page, '操作')
   const form = page.locator('.tx-form').nth(type === 'out' ? 1 : 0)
   await form.locator('input[type="text"]').nth(0).fill(name)
@@ -139,6 +139,8 @@ async function submitViaUi(page, { type = 'in', name, quantity, unit, operator }
   const unitInput = form.locator('input[type="text"]').nth(1)
   if ((await unitInput.getAttribute('readonly')) === null) await unitInput.fill(unit)
   if (operator) await form.locator('input[type="text"]').nth(2).fill(operator)
+  // nth(3) 是「经手人 / 领取人」—— 按位置取，所以新增字段必须放在操作人之后
+  if (handler) await form.locator('input[type="text"]').nth(3).fill(handler)
   await sleep(150)
   await form.locator('button[type="submit"]').click()
   await sleep(700)
@@ -152,7 +154,7 @@ const child = spawn(BIN, [
   `--remote-debugging-port=${CDP_PORT}`,
   '--no-sandbox', '--disable-gpu', '--disable-gpu-sandbox', '--disable-software-rasterizer',
   '--window-position=-3000,-3000'
-], { env: { ...process.env, NODE_OPTIONS: '', ELECTRON_DISABLE_SECURITY_WARNINGS: '1' }, stdio: ['ignore', 'pipe', 'pipe'] })
+], { env: { ...process.env, NODE_OPTIONS: '', ELECTRON_RUN_AS_NODE: '', ELECTRON_DISABLE_SECURITY_WARNINGS: '1' }, stdio: ['ignore', 'pipe', 'pipe'] })
 
 let log = ''
 child.stdout.on('data', (d) => (log += String(d)))
@@ -193,12 +195,25 @@ try {
   check('启动即读到磁盘里的种子物品', (await page.$$eval('tbody tr', (rs) => rs.length)) === 1,
     String(await page.$$eval('tbody tr', (rs) => rs.length)) + ' 行')
 
-  await submitViaUi(page, { type: 'in', name: SEED_ITEM, quantity: 300, unit: '个', operator: '张三' })
+  await submitViaUi(page, { type: 'in', name: SEED_ITEM, quantity: 300, unit: '个', operator: '张三', handler: '赵六' })
   await submitViaUi(page, { type: 'in', name: UI_ITEM, quantity: 500, unit: '个', operator: '李四' })
-  await submitViaUi(page, { type: 'out', name: UI_ITEM, quantity: 200, unit: '个', operator: '王五' })
+  await submitViaUi(page, { type: 'out', name: UI_ITEM, quantity: 200, unit: '个', operator: '王五', handler: '孙八' })
 
   await switchTab(page, '仓库')
   check('界面录入后仓库有 2 个物品', (await page.$$eval('tbody tr', (rs) => rs.length)) === 2)
+
+  // 经手人 / 领取人必须真的落盘（走完整 IPC 链路），不只是界面上填了
+  const handlerLanded = await page.evaluate(async () => {
+    const snap = await window.api.getSnapshot()
+    return snap.records
+      .filter((r) => r.handler)
+      .map((r) => `${r.type}:${r.handler}`)
+  })
+  check(
+    '界面填的经手人 / 领取人落进了磁盘（in:赵六 与 out:孙八）',
+    handlerLanded.includes('in:赵六') && handlerLanded.includes('out:孙八'),
+    JSON.stringify(handlerLanded)
+  )
 
   // ---- 报表页 ----
   await switchTab(page, '报表')
@@ -270,46 +285,79 @@ try {
     bad.length ? JSON.stringify(bad) : `${inLab.length + outLab.length} 根吻合（刻度 ${card.scaleMax}）`)
   await shot('1-报表-默认最近12个月')
 
-  // ---- 12 个月窗口平移 ----
-  const rangeText = () => page.$eval('.report-range', (e) => e.textContent.trim().replace(/^统计区间：/, ''))
-  const noteText = () =>
-    page.$$eval('.report-note', (els) => (els[0] ? els[0].textContent.trim() : null))
-  const btnDisabled = (label) =>
-    page.evaluate((t) => {
-      const b = [...document.querySelectorAll('.range-btn')].find((x) => x.textContent.trim() === t)
-      return b ? b.disabled : null
-    }, label)
-  const clickBtn = async (label) => {
-    await page.evaluate((t) => {
-      const b = [...document.querySelectorAll('.range-btn')].find((x) => x.textContent.trim() === t)
-      if (b) b.click()
-    }, label)
+  // ---- 12 个月窗口平移（每张卡各自独立）----
+  //
+  // 全部按**卡片名**取，不按 `.report-range` 的文档顺序取：顺序取法在卡片数量
+  // 或排序变了之后会静默指向另一张卡，报出来的错看起来却像时间窗算错了。
+  const cardBar = (name) =>
+    page.evaluate((n) => {
+      const card = [...document.querySelectorAll('.report-card')].find(
+        (c) => c.querySelector('.report-name')?.textContent?.trim() === n
+      )
+      if (!card) return null
+      const btns = [...card.querySelectorAll('.report-card-bar .range-btn')]
+      const find = (t) => btns.find((b) => b.textContent.trim() === t)
+      const earlier = find('◀ 更早')
+      const later = find('更晚 ▶')
+      return {
+        range: (card.querySelector('.report-range')?.textContent?.trim() ?? '').replace(
+          /^统计区间：/,
+          ''
+        ),
+        earlierDisabled: earlier ? earlier.disabled : null,
+        laterDisabled: later ? later.disabled : null,
+        hasReset: Boolean(find('回到最新')),
+        note: card.querySelector('.report-note')?.textContent?.trim() ?? null
+      }
+    }, name)
+
+  const clickCardBtn = async (name, label) => {
+    await page.evaluate(
+      ([n, t]) => {
+        const card = [...document.querySelectorAll('.report-card')].find(
+          (c) => c.querySelector('.report-name')?.textContent?.trim() === n
+        )
+        const b = [...card.querySelectorAll('.report-card-bar .range-btn')].find(
+          (x) => x.textContent.trim() === t
+        )
+        if (b) b.click()
+      },
+      [name, label]
+    )
     await sleep(250)
   }
 
   // 先确认「有历史可回看」。少了这一条，后面所有平移断言都会在
   // maxOffset = 0 的状态下「通过」——因为什么都没发生，也就没出错。
-  check('「更早」按钮可用（确有历史可回看）', (await btnDisabled('◀ 更早')) === false, await rangeText())
-  check('「更晚」按钮默认禁用（不能滑向未来）', (await btnDisabled('更晚 ▶')) === true)
-  check('默认区间 = 最近 12 个月', (await rangeText()) === rangeFor(0), await rangeText())
-  check('提示窗口外还有 3 个月的记录', (await noteText()) === '窗口外还有 3 个月的记录', String(await noteText()))
+  check('「更早」按钮可用（确有历史可回看）', (await cardBar(SEED_ITEM)).earlierDisabled === false, (await cardBar(SEED_ITEM)).range)
+  check('「更晚」按钮默认禁用（不能滑向未来）', (await cardBar(SEED_ITEM)).laterDisabled === true)
+  check('默认区间 = 最近 12 个月', (await cardBar(SEED_ITEM)).range === rangeFor(0), (await cardBar(SEED_ITEM)).range)
+  check('提示窗口外还有 3 个月的记录', (await cardBar(SEED_ITEM)).note === '窗口外还有 3 个月的记录', String((await cardBar(SEED_ITEM)).note))
 
-  await clickBtn('◀ 更早')
-  check('点「更早」区间整体前移一个月', (await rangeText()) === rangeFor(1), `${rangeFor(0)} → ${await rangeText()}`)
-  check('前移后「更晚」变可用', (await btnDisabled('更晚 ▶')) === false)
-  check('前移后出现「回到最新」', (await btnDisabled('回到最新')) === false)
+  // UI_ITEM 是刚通过界面录入的，记录全在当月 → 它自己一步都滑不动。
+  // 这条同时证明「可滑范围按各自的记录算」——沿用全局范围的话它也能滑。
+  check(
+    '★ 另一个物品（当月才录入）「更早」直接禁用（可滑范围按各自记录算）',
+    (await cardBar(UI_ITEM)).earlierDisabled === true,
+    JSON.stringify(await cardBar(UI_ITEM))
+  )
 
-  for (let i = 0; i < maxOffset; i++) await clickBtn('◀ 更早')
-  // 详情串里的 rangeText() 必须 await：漏了会打出 `[object Promise]`，
+  await clickCardBtn(SEED_ITEM, '◀ 更早')
+  check('点「更早」区间整体前移一个月', (await cardBar(SEED_ITEM)).range === rangeFor(1), `${rangeFor(0)} → ${(await cardBar(SEED_ITEM)).range}`)
+  check('前移后「更晚」变可用', (await cardBar(SEED_ITEM)).laterDisabled === false)
+  check('前移后出现「回到最新」', (await cardBar(SEED_ITEM)).hasReset === true)
+
+  for (let i = 0; i < maxOffset; i++) await clickCardBtn(SEED_ITEM, '◀ 更早')
+  // 详情串里的 cardBar() 必须 await：漏了会打出 `[object Promise]`，
   // 判定照样是对的，但这条断言一旦变红就没法从输出看出实际停在哪 —— 等于白红。
   //
   // 条件里带上 `maxOffset > 0`：maxOffset 为 0 时循环一次没跑，
   // 「停在 rangeFor(maxOffset)」和「停在默认位置」是同一件事，
   // 这条断言就会在「压根没平移」的状态下变绿。把前提写进条件里才自足。
-  const stoppedAt = await rangeText()
+  const stoppedAt = (await cardBar(SEED_ITEM)).range
   check(`一直前移到最早记录处停住（第 ${maxOffset} 个月）`, maxOffset > 0 && stoppedAt === rangeFor(maxOffset),
     `${stoppedAt}，期望 ${rangeFor(maxOffset)}`)
-  check('到最早处「更早」自动禁用', maxOffset > 0 && (await btnDisabled('◀ 更早')) === true,
+  check('到最早处「更早」自动禁用', maxOffset > 0 && (await cardBar(SEED_ITEM)).earlierDisabled === true,
     maxOffset > 0 ? '' : 'maxOffset 为 0，这条无从验证')
   const atStop = await readCard(SEED_ITEM)
   check(`滑到最早处，${months[0]} 的记录仍在窗口内`,
@@ -318,16 +366,20 @@ try {
     atStop.months.join(' '))
   await shot('2-报表-滑到最早（含窗口外提示）')
 
-  await clickBtn('回到最新')
-  check('「回到最新」复位到默认区间', (await rangeText()) === rangeFor(0), await rangeText())
-  check('复位后「回到最新」按钮消失', (await btnDisabled('回到最新')) === null)
+  await clickCardBtn(SEED_ITEM, '回到最新')
+  check('「回到最新」复位到默认区间', (await cardBar(SEED_ITEM)).range === rangeFor(0), (await cardBar(SEED_ITEM)).range)
+  check('复位后「回到最新」按钮消失', (await cardBar(SEED_ITEM)).hasReset === false)
 
-  // 拖动平移：往右拖 = 把时间轴往右拉 = 看到更早的数据
-  const dragBy = async (px) => {
-    const gb = await page.$eval('.report-grid', (el) => {
-      const r = el.getBoundingClientRect()
+  // 拖动平移：往右拖 = 把时间轴往右拉 = 看到更早的数据。
+  // 拖的是**这一张卡**的绘图区，别的卡不该动。
+  const dragBy = async (name, px) => {
+    const gb = await page.evaluate((n) => {
+      const card = [...document.querySelectorAll('.report-card')].find(
+        (c) => c.querySelector('.report-name')?.textContent?.trim() === n
+      )
+      const r = card.querySelector('.report-plot').getBoundingClientRect()
       return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + 40) }
-    })
+    }, name)
     await page.mouse.move(gb.x, gb.y)
     await page.mouse.down()
     await page.mouse.move(gb.x + px, gb.y, { steps: 8 })
@@ -335,11 +387,17 @@ try {
     await sleep(300)
   }
   const wantDrag = Math.round(130 / PX_PER_MONTH)
-  await dragBy(130)
-  check(`往右拖 130px 前移 ${wantDrag} 个月`, (await rangeText()) === rangeFor(wantDrag),
-    `${rangeFor(0)} → ${await rangeText()}，期望 ${rangeFor(wantDrag)}`)
-  await dragBy(-130)
-  check('往回拖回到默认区间', (await rangeText()) === rangeFor(0), await rangeText())
+  await dragBy(SEED_ITEM, 130)
+  check(`往右拖 130px 前移 ${wantDrag} 个月`, (await cardBar(SEED_ITEM)).range === rangeFor(wantDrag),
+    `${rangeFor(0)} → ${(await cardBar(SEED_ITEM)).range}，期望 ${rangeFor(wantDrag)}`)
+  // ★ 拖一张卡不该带动另一张 —— 这正是「各卡独立」要防的回归
+  check(
+    '★ 拖动后另一张卡（贴片电阻）仍在默认区间',
+    (await cardBar(UI_ITEM)).range === rangeFor(0),
+    (await cardBar(UI_ITEM)).range
+  )
+  await dragBy(SEED_ITEM, -130)
+  check('往回拖回到默认区间', (await cardBar(SEED_ITEM)).range === rangeFor(0), (await cardBar(SEED_ITEM)).range)
 
   const legend = await page.$$eval('.legend', (els) => els.map((e) => e.textContent.trim()))
   check('图例两项', legend.length === 2, legend.join(' | '))

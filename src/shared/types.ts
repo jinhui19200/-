@@ -35,6 +35,18 @@ export interface StockRecord {
   type: TransactionType
   /** 操作人快照（选填）。空串表示未填 */
   operator: string
+  /**
+   * 货品交接人快照（选填）。空串表示未填。
+   *
+   * 语义随 type 变化：入库是**经手人**（货交到谁手上），出库是**领取人**（货被谁领走）。
+   * 两种角色不会同时出现在一条记录上，所以存**同一个字段**而不是两个 ——
+   * 两个字段必然一个恒为空，查询、导出、断言都要处处判断「该看哪个」。
+   * 界面按 type 决定标签文案，数据层不关心。
+   *
+   * 与 {@link operator} 并存：操作人是「谁在系统里录的账」，
+   * 本字段是「货实际交给了谁」，二者可以是同一个人，也可以不是。
+   */
+  handler: string
   /** 机器写入时间（ISO），用于审计与排序兜底 */
   createdAt: string
 }
@@ -57,6 +69,11 @@ export interface TransactionInput {
   unit?: string
   /** 操作人（选填） */
   operator?: string
+  /**
+   * 货品交接人（选填）。入库填「经手人」、出库填「领取人」，
+   * 界面按 type 决定标签，数据层原样存快照。
+   */
+  handler?: string
   type: TransactionType
 }
 

@@ -29,28 +29,79 @@ interface Props {
  * 柱子上下差不多长说明进出基本平衡，上长下短说明在囤货。
  * 并排双柱读起来要来回比较两个不同的基线，反而费劲。
  *
- * 上下两半**共用同一刻度**（取所有月份里的最大值）。若各自按自己的最大值缩放，
+ * 上下两半**共用同一刻度**（取该物品窗口内所有月份的最大值）。若各自按自己的最大值缩放，
  * 一个入库 10、出库 1000 的物品会画成两根一样长的柱子，是错的。
  *
- * 时间窗口可以整体前后平移（箭头按钮或直接拖动图表）。
- * 平移的是**所有卡片共用的同一个窗口** —— 各卡片各滑各的就没法横向对比了。
+ * 时间窗口**每张卡片各自一份**，互不影响（offset 存在 ItemChart 内部）。
+ * 早先所有卡片共用一个窗口，理由是「各滑各的就没法横向对比」——
+ * 用起来发现正好相反：不同物料的周转节奏差得很远，A 物料三个月清空、
+ * B 物料一年才动一次，共用一个窗口意味着想看 B 的历史就得把 A 一起拖进空白月份。
+ * 各自独立之后，每张卡停在自己有数据的那段，反而更容易看出各自的规律。
  */
 export function ReportsPage({ items, records }: Props): React.JSX.Element {
-  /** 窗口相对「最近 N 个月」往前推了几个月。0 = 贴着当前月 */
+  if (items.length === 0) {
+    return (
+      <section className="card">
+        <h2>报表</h2>
+        <p className="empty">还没有任何物品。到「操作」页做一次入库，物品会自动建立。</p>
+      </section>
+    )
+  }
+
+  return (
+    <section className="card">
+      <h2>报表</h2>
+
+      <div className="report-meta">
+        <span className="legend">
+          <i className="swatch swatch-in" />
+          入库（轴上方）
+        </span>
+        <span className="legend">
+          <i className="swatch swatch-out" />
+          出库（轴下方）
+        </span>
+        <span className="report-hint">每张图表可各自按住左右拖动调整时间，互不影响</span>
+      </div>
+
+      <div className="report-grid">
+        {items.map((item) => (
+          <ItemChart key={item.id} item={item} records={records} />
+        ))}
+      </div>
+    </section>
+  )
+}
+
+interface ChartProps {
+  item: Item
+  records: StockRecord[]
+}
+
+function ItemChart({ item, records }: ChartProps): React.JSX.Element {
+  /** 这张卡的窗口相对「最近 N 个月」往前推了几个月。0 = 贴着当前月 */
   const [offset, setOffset] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const dragRef = useRef<{ startX: number; startOffset: number } | null>(null)
+
+  /** 只属于这个物品的记录。可滑范围与「窗口外还有几个月」都只看自己 */
+  const own = useMemo(() => records.filter((r) => r.itemId === item.id), [records, item.id])
 
   /**
-   * 最多能往前推多少个月：推到「最早一条记录所在月」为止。
-   * 再往前全是空窗口，没有信息量。没有任何记录时不能平移。
+   * 最多能往前推多少个月：推到**这个物品**最早一条记录所在月为止。
+   *
+   * 刻意不看别的物品的记录 —— 否则一个刚建的物品也能被滑到十几年前的空白窗口，
+   * 而它自己根本没有任何历史可看。
    */
   const maxOffset = useMemo(() => {
-    if (records.length === 0) return 0
-    const earliest = records.reduce((min, r) => {
+    if (own.length === 0) return 0
+    let earliest = monthKey(own[0].time)
+    for (const r of own) {
       const m = monthKey(r.time)
-      return m < min ? m : min
-    }, monthKey(records[0].time))
+      if (m < earliest) earliest = m
+    }
     return Math.max(0, monthDiff(earliest, currentMonth()))
-  }, [records])
+  }, [own])
 
   /**
    * 用钳制后的值参与渲染，而不是把 offset 存回 state。
@@ -67,26 +118,23 @@ export function ReportsPage({ items, records }: Props): React.JSX.Element {
     return recentMonths(WINDOW_MONTHS, anchor)
   }, [safeOffset])
 
-  const charts = useMemo(
-    () => items.map((item) => ({ item, series: monthlySeries(records, item.id, months) })),
-    [items, records, months]
+  const series = useMemo(
+    () => monthlySeries(records, item.id, months),
+    [records, item.id, months]
   )
 
-  // 窗口之外还有记录的月份数要明确说出来，否则用户会以为数据丢了。
+  // 这张卡的窗口之外还有几个月的记录要明确说出来，否则用户会以为数据丢了。
   // 两侧都算：往前滑之后，右侧（更新的月份）同样会落在窗口外。
   const outsideCount = useMemo(() => {
     const first = months[0]
     const last = months[months.length - 1]
     const outside = new Set(
-      records.map((r) => monthKey(r.time)).filter((m) => m < first || m > last)
+      own.map((r) => monthKey(r.time)).filter((m) => m < first || m > last)
     )
     return outside.size
-  }, [records, months])
+  }, [own, months])
 
-  // ── 拖动平移 ──
-  const dragRef = useRef<{ startX: number; startOffset: number } | null>(null)
-  const [dragging, setDragging] = useState(false)
-
+  // ── 拖动平移（只作用于这张卡） ──
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>): void => {
     if (e.button !== 0) return
     dragRef.current = { startX: e.clientX, startOffset: safeOffset }
@@ -113,88 +161,6 @@ export function ReportsPage({ items, records }: Props): React.JSX.Element {
     }
   }
 
-  if (items.length === 0) {
-    return (
-      <section className="card">
-        <h2>报表</h2>
-        <p className="empty">还没有任何物品。到「操作」页做一次入库，物品会自动建立。</p>
-      </section>
-    )
-  }
-
-  return (
-    <section className="card">
-      <h2>报表</h2>
-
-      <div className="report-meta">
-        <span className="legend">
-          <i className="swatch swatch-in" />
-          入库（轴上方）
-        </span>
-        <span className="legend">
-          <i className="swatch swatch-out" />
-          出库（轴下方）
-        </span>
-        <span className="report-hint">按住图表左右拖动可调整时间</span>
-        {outsideCount > 0 && (
-          <span className="report-note">窗口外还有 {outsideCount} 个月的记录</span>
-        )}
-      </div>
-
-      <div className="report-toolbar">
-        <button
-          type="button"
-          className="range-btn"
-          onClick={() => setOffset(clampOffset(safeOffset + 1))}
-          disabled={safeOffset >= maxOffset}
-          title="往前看一个月"
-        >
-          ◀ 更早
-        </button>
-
-        <span className="report-range">
-          统计区间：{months[0]} ~ {months[months.length - 1]}
-        </span>
-
-        <button
-          type="button"
-          className="range-btn"
-          onClick={() => setOffset(clampOffset(safeOffset - 1))}
-          disabled={safeOffset === 0}
-          title="往后看一个月"
-        >
-          更晚 ▶
-        </button>
-
-        {safeOffset > 0 && (
-          <button type="button" className="range-btn range-btn-reset" onClick={() => setOffset(0)}>
-            回到最新
-          </button>
-        )}
-      </div>
-
-      <div
-        className={`report-grid${dragging ? ' dragging' : ''}`}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-      >
-        {charts.map(({ item, series }) => (
-          <ItemChart key={item.id} item={item} months={months} series={series} />
-        ))}
-      </div>
-    </section>
-  )
-}
-
-interface ChartProps {
-  item: Item
-  months: string[]
-  series: Array<{ month: string; in: number; out: number }>
-}
-
-function ItemChart({ item, months, series }: ChartProps): React.JSX.Element {
   /**
    * 该物品在窗口内的真实峰值。0 表示这段时间完全没有出入库 ——
    * 慢周转的物料本来就可能半年不动，是个正常状态，不是异常。
@@ -221,7 +187,50 @@ function ItemChart({ item, months, series }: ChartProps): React.JSX.Element {
         </span>
       </header>
 
-      <div className="report-plot">
+      {/* 这张卡自己的时间窗控制条。页面级不再有共用的工具条 */}
+      <div className="report-card-bar">
+        <button
+          type="button"
+          className="range-btn range-btn-sm"
+          onClick={() => setOffset(clampOffset(safeOffset + 1))}
+          disabled={safeOffset >= maxOffset}
+          title="往前看一个月"
+        >
+          ◀ 更早
+        </button>
+        <span className="report-range" title="这张图当前显示的月份区间">
+          {months[0]} ~ {months[months.length - 1]}
+        </span>
+        <button
+          type="button"
+          className="range-btn range-btn-sm"
+          onClick={() => setOffset(clampOffset(safeOffset - 1))}
+          disabled={safeOffset === 0}
+          title="往后看一个月"
+        >
+          更晚 ▶
+        </button>
+        {outsideCount > 0 && (
+          <span className="report-note">窗口外还有 {outsideCount} 个月的记录</span>
+        )}
+        {safeOffset > 0 && (
+          <button
+            type="button"
+            className="range-btn range-btn-sm range-btn-reset"
+            onClick={() => setOffset(0)}
+          >
+            回到最新
+          </button>
+        )}
+      </div>
+
+      <div
+        className={`report-plot${dragging ? ' dragging' : ''}`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
         {/* 零轴两侧各标一次「0」会重复，只在轴下方留一个 —— 轴本身就是零线 */}
         <div className="plot-gutter plot-gutter-in">{peak > 0 && <span>{formatQuantity(peak)}</span>}</div>
         <div className="plot-gutter plot-gutter-out">

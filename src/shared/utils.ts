@@ -11,6 +11,60 @@ export function normalizeName(raw: string): string {
   return raw.trim().replace(/\s+/g, ' ')
 }
 
+/**
+ * 货品交接人的标签文案：入库叫「经手人」，出库叫「领取人」。
+ *
+ * 放在共用模块里，是为了让表单标签、记录列表表头、导出 Excel 的列名
+ * 三处**永远取自同一个定义** —— 三处各写一遍的话，改文案时必然漏掉一处。
+ */
+export function handlerLabel(type: 'in' | 'out'): string {
+  return type === 'in' ? '经手人' : '领取人'
+}
+
+/**
+ * 记录列表 / 导出表里这一列的列名。
+ *
+ * 一条记录非入即出，只会有一个角色，所以共用一列；
+ * 列名把两种叫法都写出来，用户看到「领取人：王五」不会以为列名错了。
+ */
+export const HANDLER_COLUMN = '经手人/领取人'
+
+/**
+ * 物品是否匹配搜索词。
+ *
+ * 大小写不敏感、忽略首尾空白。刻意**只匹配名称**：
+ * 搜索的目的是「找到某个物品」，把单位也算进去会让搜「个」时全表命中，
+ * 反而找不到目标。
+ */
+export function matchesItemQuery(name: string, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return false
+  return name.toLowerCase().includes(q)
+}
+
+/**
+ * 搜索时把匹配的物品排到前面，其余保持原有相对顺序。
+ *
+ * 刻意**只重排不隐藏**：仓库页是全量台账，用户搜「螺丝」多半是想
+ * 顺带核对旁边的库存，把其余行藏掉反而要反复清空搜索框才能看全。
+ *
+ * 用 filter 分两段再拼接，而不是 `sort` —— `sort` 在比较函数里返回 0
+ * 时**不保证稳定**（V8 对超过 10 个元素改用 TimSort 前的快排分支，
+ * 历史上就不稳定），匹配项与其余项各自内部的顺序会随机打乱，
+ * 每次输入一个字符整张表都在跳。
+ */
+export function pinMatches<T>(list: T[], getName: (x: T) => string, query: string): T[] {
+  if (!query.trim()) return list
+  const hit: T[] = []
+  const rest: T[] = []
+  for (const x of list) {
+    if (matchesItemQuery(getName(x), query)) hit.push(x)
+    else rest.push(x)
+  }
+  return [...hit, ...rest]
+}
+
+
 /** 库存警戒值的默认值。新物品、以及旧数据里没有这个字段的物品都用它。 */
 export const DEFAULT_THRESHOLD = 100
 

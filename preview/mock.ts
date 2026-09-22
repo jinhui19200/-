@@ -48,7 +48,8 @@ function seed(): DB {
     unit: string,
     quantity: number,
     type: 'in' | 'out',
-    operator: string
+    operator: string,
+    handler = ''
   ): StockRecord => ({
     id: nid('r'),
     itemId,
@@ -58,15 +59,18 @@ function seed(): DB {
     quantity,
     type,
     operator,
+    handler,
     createdAt: NOW
   })
 
   const records: StockRecord[] = [
-    mk('i1', '2026-09-19T09:30', 'M3×8 螺丝', '个', 100, 'in', '张三'),
-    mk('i1', '2026-09-19T10:00', 'M3×8 螺丝', '个', 50, 'in', '李四'),
-    mk('i1', '2026-09-19T11:00', 'M3×8 螺丝', '个', 20, 'out', '张三'),
+    // 前几条刻意带上「经手人 / 领取人」：记录页要有一列显示它，
+    // 全空的话断言只能验「列存在」，验不了「值取对了」。
+    mk('i1', '2026-09-19T09:30', 'M3×8 螺丝', '个', 100, 'in', '张三', '赵六'),
+    mk('i1', '2026-09-19T10:00', 'M3×8 螺丝', '个', 50, 'in', '李四', '赵六'),
+    mk('i1', '2026-09-19T11:00', 'M3×8 螺丝', '个', 20, 'out', '张三', '孙八'),
     mk('i2', '2026-09-18T14:00', '贴片电阻 10kΩ', '个', 200, 'in', ''),
-    mk('i2', '2026-09-19T08:00', '贴片电阻 10kΩ', '个', 120, 'out', '王五'),
+    mk('i2', '2026-09-19T08:00', '贴片电阻 10kΩ', '个', 120, 'out', '王五', '周九'),
     mk('i3', '2026-09-19T13:00', '铜线 1.5mm²', '米', 30, 'in', ''),
     mk('i3', '2026-09-19T15:00', '铜线 1.5mm²', '米', 45, 'out', '李四'),
     mk('i4', '2026-09-17T16:20', '焊锡丝 0.8mm', '卷', 12, 'in', '张三'),
@@ -200,6 +204,7 @@ function applyTransaction(input: TransactionInput): TransactionResult {
     quantity,
     type: input.type,
     operator: (input.operator ?? '').trim(),
+    handler: (input.handler ?? '').trim(),
     createdAt: stamp
   }
   next.records.push(record)

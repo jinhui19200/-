@@ -241,15 +241,22 @@ async function run(): Promise<void> {
   section('3. 经 IPC 提交入库 → 真实落盘')
   const t1 = await evalIn<TransactionResult>(
     win,
-    TX({ time: '2026-09-19T10:00', name: 'M3×8 螺丝', quantity: 100, unit: '个', operator: '张三', type: 'in' })
+    TX({ time: '2026-09-19T10:00', name: 'M3×8 螺丝', quantity: 100, unit: '个', operator: '张三', handler: '赵六', type: 'in' })
   )
   check('入库返回 ok', t1.ok === true, t1.ok ? '' : t1.error)
   check('库存 = 100', t1.ok && t1.item.quantity === 100, t1.ok ? `${t1.item.quantity}` : '')
   check('操作人快照 = 张三', t1.ok && t1.record.operator === '张三')
+  check('经手人快照 = 赵六', t1.ok && t1.record.handler === '赵六', t1.ok ? JSON.stringify(t1.record.handler) : '')
   check('data.json 已写入磁盘', await fileExists(dataFile))
   const onDisk1 = await readJSON(dataFile)
   check('磁盘上记录数 = 1', onDisk1.records.length === 1, `${onDisk1.records.length}`)
   check('磁盘上物品数 = 1', onDisk1.items.length === 1, `${onDisk1.items.length}`)
+  // 快照字段要真落盘，不能只活在返回值和内存里
+  check(
+    '经手人已落盘（磁盘上 handler = 赵六）',
+    onDisk1.records[0]?.handler === '赵六',
+    JSON.stringify(onDisk1.records[0]?.handler)
+  )
 
   // ── 4. 单位锁定 ──────────────────────────────────────────────
   section('4. 单位锁定经 IPC 生效')
@@ -265,11 +272,13 @@ async function run(): Promise<void> {
   section('5. 负库存只警告不阻断')
   const t3 = await evalIn<TransactionResult>(
     win,
-    TX({ time: '2026-09-19T12:00', name: 'M3×8 螺丝', quantity: 200, unit: '个', operator: '王五', type: 'out' })
+    TX({ time: '2026-09-19T12:00', name: 'M3×8 螺丝', quantity: 200, unit: '个', operator: '王五', handler: '孙八', type: 'out' })
   )
   check('出库 200 仍成功', t3.ok === true, t3.ok ? '' : t3.error)
   check('库存变为 -50', t3.ok && t3.item.quantity === -50, t3.ok ? `${t3.item.quantity}` : '')
   check('返回了负库存提示', t3.ok && Boolean(t3.warning), t3.ok ? String(t3.warning) : '')
+  // 出库走的是**同一个 handler 字段**，只是语义从「经手人」变成「领取人」
+  check('出库的领取人也落在 handler 字段上', t3.ok && t3.record.handler === '孙八', t3.ok ? JSON.stringify(t3.record.handler) : '')
 
   // ── 6. 变更广播 ──────────────────────────────────────────────
   section('6. 数据变更广播到渲染进程')

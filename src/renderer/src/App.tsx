@@ -98,6 +98,7 @@ export default function App() {
             records={db.records}
             applyTransaction={applyTransaction}
             setItemThreshold={setItemThreshold}
+            exportXlsx={exportXlsx}
           />
         )}
         {ready && tab === 'records' && (

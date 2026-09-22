@@ -65,10 +65,14 @@ export function getSnapshot(): DB {
 
 function parseDB(raw: string): DB {
   const parsed = JSON.parse(raw) as Partial<DB>
+  // 旧数据文件里的记录可能没有 operator / handler（这两个字段是后加的）。
+  // 在这里一次性补齐，读取方就不必到处写 `r.handler ?? ''` ——
+  // 补齐点只有一处，界面、导出、断言看到的就都是同一个形状。
   const records = Array.isArray(parsed.records)
     ? parsed.records.map((r) => ({
         ...r,
-        operator: (r as { operator?: string }).operator ?? ''
+        operator: (r as { operator?: string }).operator ?? '',
+        handler: (r as { handler?: string }).handler ?? ''
       }))
     : []
   // 旧数据文件里没有 threshold 字段（这个功能是后加的）。
