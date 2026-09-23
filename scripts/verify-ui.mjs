@@ -1875,6 +1875,218 @@ async function run(page, shot) {
   check('报表页也不再有被并掉的卡片', !reportNames.includes(REC_SRC), reportNames.join('/'))
   check('报表页有合并后的卡片', reportNames.includes(REC_DST), reportNames.join('/'))
 
+  // ── 9c. 仓库页行内「入库 / 出库」弹窗：另一个入口 ──────────
+  /*
+   * 出入库有**两个入口**：
+   *   ①「操作」页的常驻表单 —— 第 6 节测的是它
+   *   ② 仓库页每行的「入库 / 出库」按钮弹出的对话框 —— 本节
+   *
+   * 两者共用 TransactionForm，但**挂载方式与收尾都不同**：弹窗是条件渲染的
+   * （modalType 为真才挂载）、要把物品名预填进去、提交成功后自己关掉，
+   * 而且 onCancel 只在弹窗里传。只测入口①，入口② 一行都没跑过 ——
+   * 这正是「一个功能多个入口、只覆盖一个」的盲区。
+   *
+   * 全部用**相对断言**（提交前后比库存、比记录条数），不写死绝对条数：
+   * 这样这一节插在哪一段后面都不会被上游的写操作带偏。
+   */
+  section('9c. 仓库页行内「入库/出库」弹窗（另一个入口）')
+
+  /**
+   * 记录页所有行，每行打成 { 表头名: 值 }（按表头名取列，不按下标）。
+   *
+   * 刻意**不靠行位置**定位新记录：两条记录的时间若显示到同一分钟，
+   * 谁排第一就取决于排序对并列的处理，拿「第一行」断言会随机失败 ——
+   * 这条断言第一版正是这么挂的（取到的第一行是第 6 节那条旧记录）。
+   */
+  const recRows = () =>
+    page.evaluate(() => {
+      const t = document.querySelector('table.table')
+      const ths = [...t.querySelectorAll('thead th')].map((th) =>
+        th.textContent.trim().replace(/（[^）]*）|\([^)]*\)/g, '').trim()
+      )
+      return [...t.querySelectorAll('tbody tr')].map((tr) => {
+        const tds = [...tr.querySelectorAll('td')]
+        const out = {}
+        ths.forEach((k, i) => {
+          if (tds[i]) out[k] = tds[i].textContent.trim()
+        })
+        return out
+      })
+    })
+
+  /** 一条记录的「内容指纹」—— 用来数「这一笔」多了几条，与行序无关 */
+  const recKey = (r) => `${r['名称']}|${r['类型']}|${r['数量']}|${r['单位']}`
+
+  // 先记下记录条数与内容供提交后做相对比较（此时筛选已清空）
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(400)
+  const recBefore = await rowCount(page)
+  const recRowsBefore = await recRows()
+
+  await switchTab(page, '仓库')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(300)
+
+  // 取第一行作为目标物品：不写死名字，上游小节改名/合并过也不会失配
+  const TGT = (await whNames(page))[0]
+  check('取到目标物品', Boolean(TGT), JSON.stringify(TGT))
+
+  const rowButtons = (name) =>
+    page.evaluate((n) => {
+      const tr = [...document.querySelectorAll('table.table tbody tr')].find(
+        (r) => r.querySelector('td')?.textContent?.trim() === n
+      )
+      return tr
+        ? [...tr.querySelectorAll('td:last-child button')].map((b) => b.textContent.trim())
+        : []
+    }, name)
+
+  const rowBtns = await rowButtons(TGT)
+  check(
+    `仓库页「${TGT}」这一行有「入库」和「出库」按钮`,
+    rowBtns.includes('入库') && rowBtns.includes('出库'),
+    rowBtns.join('/') || '(没有按钮)'
+  )
+
+  const clickRowBtn = (name, label) =>
+    page.evaluate(
+      ([n, l]) => {
+        const tr = [...document.querySelectorAll('table.table tbody tr')].find(
+          (r) => r.querySelector('td')?.textContent?.trim() === n
+        )
+        if (!tr) throw new Error('找不到行：' + n)
+        const b = [...tr.querySelectorAll('td:last-child button')].find(
+          (x) => x.textContent.trim() === l
+        )
+        if (!b) throw new Error('找不到按钮：' + l)
+        b.click()
+      },
+      [name, label]
+    )
+
+  /** 弹窗标题（去掉空白再比：JSX 会把「—」两侧插成独立文本节点） */
+  const modalTitle = async () =>
+    ((await page.locator('.modal-header h3').first().textContent()) ?? '').replace(/\s/g, '')
+
+  /** 仓库页某物品的库存数字 */
+  const qtyOf = async (name) => {
+    const row = await warehouseRow(page, name)
+    return row ? Number(String(row['数量']).replace(/,/g, '')) : NaN
+  }
+
+  // 9c-1 入库弹窗
+  await clickRowBtn(TGT, '入库')
+  await page.waitForSelector('.modal-overlay')
+  await page.waitForTimeout(250)
+  check('点行内「入库」→ 弹出对话框', (await page.locator('.modal-overlay').count()) === 1)
+
+  /*
+   * 对话框的类名 `.modal` 与改名合并框**共用**，光数 `.modal` 分不清是哪一个。
+   * 所以按**标题语义**断言 —— 顺带把这个「类名共用」的事实钉在这里，
+   * 免得以后有人写个裸 `.modal` 计数断言，在两条路径上都「通过」却不知道验的是谁。
+   */
+  check(
+    `对话框标题是「入库 — ${TGT}」（按标题区分，不靠共用类名）`,
+    (await modalTitle()) === `入库—${TGT}`.replace(/\s/g, ''),
+    JSON.stringify(await modalTitle())
+  )
+
+  check(
+    '弹窗里只有这一个表单（操作页的常驻表单没跟着来）',
+    (await page.locator('.tx-form').count()) === 1,
+    `${await page.locator('.tx-form').count()} 个`
+  )
+
+  const mForm = page.locator('.modal .tx-form')
+  const mName = mForm.locator('input[type="text"]').nth(0)
+  const mUnit = mForm.locator('input[type="text"]').nth(1)
+  const mQty = mForm.locator('input[type="number"]')
+
+  check(
+    '弹窗里的名称已预填成该物品（不用再手输一遍）',
+    (await mName.inputValue()) === TGT,
+    await mName.inputValue()
+  )
+  const tgtUnit = await mUnit.inputValue()
+  check(
+    `单位已带出并锁定为「${tgtUnit}」`,
+    tgtUnit !== '' && (await mUnit.getAttribute('readonly')) !== null,
+    tgtUnit || '(空)'
+  )
+
+  const beforeQty = await qtyOf(TGT)
+  const IN_AMT = 7
+  await mQty.fill(String(IN_AMT))
+  await page.waitForTimeout(150)
+  await mForm.locator('button[type="submit"]').click()
+  await page.waitForTimeout(800)
+  check('提交成功后弹窗自己关掉', (await page.locator('.modal-overlay').count()) === 0)
+
+  const afterQty = await qtyOf(TGT)
+  check(
+    `入库 ${IN_AMT} 后「${TGT}」库存 ${beforeQty} → ${beforeQty + IN_AMT}`,
+    afterQty === beforeQty + IN_AMT,
+    `实际 ${afterQty}`
+  )
+
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(400)
+  check(
+    `记录多了一条（${recBefore} → ${recBefore + 1}）`,
+    (await rowCount(page)) === recBefore + 1,
+    `${await rowCount(page)} vs ${recBefore + 1}`
+  )
+  const recRowsAfter = await recRows()
+  const wanted = `${TGT}|入库|${IN_AMT}|${tgtUnit}`
+  const nBefore = recRowsBefore.filter((r) => recKey(r) === wanted).length
+  const nAfter = recRowsAfter.filter((r) => recKey(r) === wanted).length
+  check(
+    `多了一条「${TGT} / 入库 / ${IN_AMT} ${tgtUnit}」的记录（按内容数，不靠行位置）`,
+    nAfter === nBefore + 1,
+    `${nAfter} vs ${nBefore + 1}`
+  )
+  const tgtRecBefore = recRowsBefore.filter((r) => r['名称'] === TGT).length
+  const tgtRecAfter = recRowsAfter.filter((r) => r['名称'] === TGT).length
+  check(
+    `「${TGT}」的记录总数 ${tgtRecBefore} → ${tgtRecBefore + 1}`,
+    tgtRecAfter === tgtRecBefore + 1,
+    `实际 ${tgtRecAfter}`
+  )
+
+  // 9c-2 出库弹窗 + 两种关闭方式
+  await switchTab(page, '仓库')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(300)
+
+  await clickRowBtn(TGT, '出库')
+  await page.waitForSelector('.modal-overlay')
+  await page.waitForTimeout(250)
+  check(
+    `点行内「出库」→ 标题是「出库 — ${TGT}」`,
+    (await modalTitle()) === `出库—${TGT}`.replace(/\s/g, ''),
+    JSON.stringify(await modalTitle())
+  )
+
+  // 关闭方式一：右上角 ×
+  await page.locator('.modal-close').click()
+  await page.waitForTimeout(250)
+  check('点右上角 × 能关掉弹窗', (await page.locator('.modal-overlay').count()) === 0)
+
+  // 关闭方式二：点遮罩（弹窗自己 stopPropagation，点它内部不该被误关）
+  await clickRowBtn(TGT, '出库')
+  await page.waitForSelector('.modal-overlay')
+  await page.waitForTimeout(250)
+  await page.locator('.modal-overlay').click({ position: { x: 5, y: 5 } })
+  await page.waitForTimeout(250)
+  check('点遮罩也能关掉弹窗', (await page.locator('.modal-overlay').count()) === 0)
+  check(
+    '取消没写盘：关掉弹窗后库存不变',
+    (await qtyOf(TGT)) === afterQty,
+    `${await qtyOf(TGT)} vs ${afterQty}`
+  )
+
   // ── 10. 控制台 ───────────────────────────────────────────
   section('10. 渲染进程控制台')
   check('无 console.error / pageerror', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
