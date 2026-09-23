@@ -49,9 +49,17 @@
 | --- | --- | --- |
 | 类型检查 | 0 错误 | — |
 | verify:store | 131 | +31 |
-| verify:electron | 62 | — |
+| verify:electron | 81 | +19 |
 | verify:ui | 236 | +35 |
 | verify:app | 41 | — |
+| verify:packaged | 40 | — |
+
+**补掉一个验证缺口**：`db:renameItem` 这条通道一开始**没有任何一层真跑过它** ——
+`verify:ui` 用的是预览版的内存 mock，通道名写错、主进程忘了注册 handler、
+preload 没暴露，那边**全都是绿的**。所以补了一节 `verify:electron`：
+另开一个数据目录（刻意不共用，因为改名会写盘、写盘会轮转 `.bak`，
+会毁掉第 11 节「备份 = 撤销前的状态」这个前提），真经一次
+contextBridge + IPC + 磁盘往返。
 
 **反向验证（必做，证明断言不是空跑）**：
 
@@ -59,7 +67,28 @@
 - 去掉「合并时累加数量」→ 「数量按「卷」累加」变红 ✓
 - 关掉单位冲突检测（数据层）→ 「带回 unitConflict」变红 ✓
 - 关掉单位冲突检测（界面）→ 4 条单位选择断言全变红 ✓
+- 去掉改名后的 `broadcastChanged()` → **只有**「界面同步显示新名字」变红，其余 80 项照绿 ✓
 - 右键菜单**真的抓到过一个 bug**，见下
+
+**发布**
+
+推 `v1.4.0` tag 触发 CI（run #11），三个 job 全绿：`verify` → `build-mac` + `build-win`。
+
+| 产物 | 体积 |
+| --- | --- |
+| `warehouse-manager-1.4.0-arm64.dmg`（macOS arm64） | 121.3 MB |
+| `warehouse-manager-1.4.0-setup.exe`（Windows x64） | 106.5 MB |
+
+本机同时打了一份做验证（`dist/`），`verify:packaged` 从挂载的 DMG 真启动 **40/40 通过**：
+preload 链路通、渲染资源确实来自 `app.asar`、报表页全部功能正常。
+
+- 签名：ad-hoc（`identity: '-'`）。`codesign -dv` 显示 `Signature=adhoc`、
+  `Identifier=com.jinhui.warehouse-manager`，`codesign --verify --deep --strict` 退出码 0
+- `Info.plist` 里 `CFBundleShortVersionString = 1.4.0`（不是只看文件名）
+- 本地 DMG 134MB vs CI 121.3MB：差的只是**压缩级别**，不是内容 ——
+  绕开 dmgbuild 用 `hdiutil` 出图只能用默认压缩级别。功能无差别
+- 交付时需说明：macOS 未公证，首次打开要「右键 → 打开」；
+  Windows 未签名，首次运行要过 SmartScreen（「更多信息 → 仍要运行」）
 
 **踩到的坑：右键菜单「闪一下就没」**
 

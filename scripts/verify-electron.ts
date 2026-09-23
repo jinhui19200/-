@@ -18,7 +18,7 @@ import { mkdtempSync } from 'node:fs'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DB, TransactionResult, DeleteRecordResult } from '@shared/types'
+import type { DB, RenameItemResult, TransactionResult, DeleteRecordResult } from '@shared/types'
 import { registerIpcHandlers } from '../src/main/ipc'
 import { getDataFilePath, getLoadReport, initStore, load } from '../src/main/store/db'
 
@@ -428,8 +428,111 @@ async function run(): Promise<void> {
   check('错误信息说明是数据文件损坏', bothErr.includes('数据文件损坏'), bothErr.replace(/\s+/g, ' ').slice(0, 80))
   check('错误信息给出了两个路径', bothErr.includes(dataFile) && bothErr.includes(bakFile))
 
-  // ── 13. 控制台 ───────────────────────────────────────────────
-  section('13. 渲染进程控制台')
+  // ── 13. 改名经 IPC（独立数据目录） ───────────────────────────
+  /*
+   * 这一节**刻意另开一个数据目录**，不和前面共用。
+   *
+   * 原因是改名要写盘，而每次写盘都会轮转 `.bak` —— 第 11 节的前提是
+   * 「备份 = 撤销前的状态」，一旦被搅动，那一整组恢复断言就会以「值不对」的
+   * 形式变红，完全看不出根因是这里多写了一次。
+   * （第一版把本节插在第 8 节之后就正是这么挂的：记录数 4→5、库存 165→172。）
+   *
+   * 这一节也是**唯一**验得到「db:renameItem 这条通道真的接上了」的地方：
+   * verify:ui 跑的是预览版的内存 mock（preview/mock.ts），
+   * 通道名写错、主进程忘了注册 handler、preload 没暴露 —— 那边**全都是绿的**。
+   */
+  section('13. 重命名经 IPC 落到磁盘')
+  const rnDir = mkdtempSync(join(tmpdir(), 'wm-rename-'))
+  initStore(rnDir)
+  await load()
+  win = await openWindow()
+  const rnDataFile = getDataFilePath()
+
+  const seedA1 = await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-20T09:00', name: '改名甲', quantity: 10, unit: '个', type: 'in' })
+  )
+  const seedA2 = await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-20T09:30', name: '改名甲', quantity: 5, unit: '个', type: 'in' })
+  )
+  const seedB = await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-20T10:00', name: '改名乙', quantity: 7, unit: '盒', type: 'in' })
+  )
+  check('铺好改名用的数据（甲 2 条、乙 1 条）', seedA1.ok && seedA2.ok && seedB.ok)
+  if (!seedA1.ok || !seedB.ok) throw new Error('改名用例的前置数据没造出来')
+  const rnItemAId = seedA1.item.id
+  const rnItemBId = seedB.item.id
+
+  // 单纯改名
+  const rn1 = await evalIn<RenameItemResult>(
+    win,
+    `window.api.renameItem(${JSON.stringify(rnItemAId)}, "改名甲·新")`
+  )
+  check('改名经 IPC 返回 ok', rn1.ok === true, rn1.ok ? '' : rn1.error)
+  check('标记为「不是合并」', rn1.ok && rn1.merged === false)
+  check(
+    '该物品的 2 条历史记录名称快照一起改了',
+    rn1.ok && rn1.renamedRecords === 2,
+    rn1.ok ? `${rn1.renamedRecords}` : ''
+  )
+  check('数量不受改名影响（10 + 5）', rn1.ok && rn1.item.quantity === 15, rn1.ok ? `${rn1.item.quantity}` : '')
+
+  const rnDisk1 = await readJSON(rnDataFile)
+  check('磁盘上物品名已更新', rnDisk1.items.some((i) => i.name === '改名甲·新'))
+  check(
+    '磁盘上旧名字的记录一条不剩',
+    rnDisk1.records.every((r) => r.name !== '改名甲'),
+    rnDisk1.records.map((r) => r.name).join('/')
+  )
+  check('改名不写新流水（磁盘记录数仍是 3）', rnDisk1.records.length === 3, `${rnDisk1.records.length}`)
+  check(
+    '界面同步显示新名字（改名广播到了渲染进程）',
+    await waitFor(async () => (await firstRow(win!))['名称'] === '改名甲·新'),
+    rowText(await firstRow(win))
+  )
+
+  // 撞名合并：刻意让两边单位不同（个 / 盒），把 unitConflict 也走一遍
+  const rn2 = await evalIn<RenameItemResult>(
+    win,
+    `window.api.renameItem(${JSON.stringify(rnItemBId)}, "改名甲·新", "箱")`
+  )
+  check('撞名合并经 IPC 返回 ok', rn2.ok === true, rn2.ok ? '' : rn2.error)
+  check('标记为「合并」', rn2.ok && rn2.merged === true)
+  check('数量累加 15 + 7 = 22', rn2.ok && rn2.item.quantity === 22, rn2.ok ? `${rn2.item.quantity}` : '')
+  check(
+    '带回单位冲突（保留方「个」/ 被并方「盒」）',
+    rn2.ok && rn2.unitConflict?.keptUnit === '个' && rn2.unitConflict?.otherUnit === '盒',
+    JSON.stringify(rn2.ok ? rn2.unitConflict : rn2)
+  )
+  check('调用方指定的单位生效（箱）', rn2.ok && rn2.item.unit === '箱', rn2.ok ? rn2.item.unit : '')
+
+  const rnDisk2 = await readJSON(rnDataFile)
+  check('磁盘上物品数从 2 变成 1', rnDisk2.items.length === 1, `${rnDisk2.items.length}`)
+  check('磁盘上源物品已删除', !rnDisk2.items.some((i) => i.id === rnItemBId))
+  check(
+    '磁盘上源物品的记录都归到目标物品名下',
+    rnDisk2.records.length === 3 && rnDisk2.records.every((r) => r.itemId === rnItemAId),
+    rnDisk2.records.map((r) => r.itemId).join('/')
+  )
+  check(
+    '被并记录的 unit 快照保持原样（「7 盒」是当时的计量事实，不能改写成「箱」）',
+    rnDisk2.records.some((r) => r.unit === '盒'),
+    rnDisk2.records.map((r) => r.unit).join('/')
+  )
+  const rnBad = await evalIn<RenameItemResult>(
+    win,
+    `window.api.renameItem(${JSON.stringify(rnItemAId)}, "   ")`
+  )
+  check('非法输入经 IPC 被拒绝（空名）', rnBad.ok === false, JSON.stringify(rnBad))
+
+  win.destroy()
+  win = null
+  await rm(rnDir, { recursive: true, force: true })
+
+  // ── 14. 控制台 ───────────────────────────────────────────────
+  section('14. 渲染进程控制台')
   check('无 console.error', rendererErrors.length === 0, rendererErrors.slice(0, 3).join(' | '))
 
   console.log(`\n${'─'.repeat(56)}`)
