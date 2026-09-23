@@ -1816,6 +1816,65 @@ async function run(page, shot) {
   const recAfterRename = await page.$$eval('table.table tbody tr', (rs) => rs.length)
   check('改名与合并都没有产生新的出入库流水', recAfterRename === exportRows, `${recAfterRename} vs ${exportRows}`)
 
+  // ── 从记录页发起合并：另一条路径 ─────────────────────────
+  /*
+   * 上面那次合并是从**仓库页**发起的。从**记录页**发起是另一条代码路径 ——
+   * 源物品的记录正被列表遍历着，合并会把它们整体改嫁到目标物品名下、
+   * 再把源物品从 items 里删掉。列表和物品表同时变化，容易出问题。
+   *
+   * 用户的需求里「记录页也能改名」是明确写了的，所以这条路径必须覆盖。
+   */
+  const REC_SRC = '贴片电阻 10kΩ'
+  const REC_DST = 'M3×8 螺丝'
+  const recSrcIdx = await recRowIdx(page, REC_SRC)
+  check(`记录页找得到「${REC_SRC}」的记录`, recSrcIdx >= 0, `下标 ${recSrcIdx}`)
+
+  await switchTab(page, '仓库')
+  const itemsBeforeRecMerge = await rowCount(page)
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+
+  await page.locator('table.table tbody tr').nth(recSrcIdx).locator('.name-text').dblclick()
+  await page.locator('input.name-input').fill(REC_DST)
+  await page.locator('input.name-input').press('Enter')
+  check('从记录页撞名同样弹出合并确认框', (await page.locator('.modal').count()) === 1)
+  check(
+    '两边单位都是「个」→ 不出现选单位的区域',
+    (await page.locator('.unit-choice').count()) === 0
+  )
+  await page.locator('.modal-actions .btn', { hasText: '合并' }).click()
+  check('从记录页合并后对话框关闭', (await page.locator('.modal').count()) === 0)
+
+  check(
+    '记录页里被并掉的名称一条不剩（所有记录都改嫁到目标物品名下）',
+    await (async () => {
+      for (let i = 0; i < 40; i++) {
+        const names = await recNames(page)
+        if (!names.includes(REC_SRC) && names.includes(REC_DST)) return true
+        await sleep(100)
+      }
+      return false
+    })(),
+    (await recNames(page)).filter((n) => n === REC_SRC).length + ' 条残留'
+  )
+
+  await switchTab(page, '仓库')
+  await page.waitForSelector('table.table')
+  check(
+    '仓库页物品数少了一个',
+    (await rowCount(page)) === itemsBeforeRecMerge - 1,
+    `${await rowCount(page)} vs ${itemsBeforeRecMerge - 1}`
+  )
+  check('仓库页不再有被并掉的名称', !(await whNames(page)).includes(REC_SRC))
+
+  await switchTab(page, '报表')
+  await page.waitForSelector('.report-card')
+  const reportNames = await page.evaluate(() =>
+    [...document.querySelectorAll('.report-name')].map((e) => e.textContent.trim())
+  )
+  check('报表页也不再有被并掉的卡片', !reportNames.includes(REC_SRC), reportNames.join('/'))
+  check('报表页有合并后的卡片', reportNames.includes(REC_DST), reportNames.join('/'))
+
   // ── 10. 控制台 ───────────────────────────────────────────
   section('10. 渲染进程控制台')
   check('无 console.error / pageerror', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))
