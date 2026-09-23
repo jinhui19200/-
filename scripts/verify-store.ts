@@ -113,7 +113,20 @@ async function main(): Promise<void> {
   r = await applyTransaction({ time: '2026-09-19T14:00', name: 'M3螺丝', quantity: 200, type: 'out' })
   check('超库存出库不被阻断', r.ok === true, r.ok ? '' : r.error)
   check('库存变负 = -55', r.ok && r.item.quantity === -55, r.ok ? `实际 ${r.item.quantity}` : '')
-  check('返回负库存警告', r.ok && typeof r.warning === 'string' && r.warning.length > 0)
+  /*
+   * 这里刻意把**文案本身**钉死，而不是只查 `typeof warning === 'string'`。
+   *
+   * 原因：这段告警文案在**两个地方各写了一份** —— 真实数据层
+   * （src/main/store/transactions.ts）与界面自检用的内存替身（preview/mock.ts）。
+   * 界面层测的是替身，所以替身改了、真实实现没改，界面层照样全绿，
+   * 而用户看到的是另一句话 —— 这种分叉只有「两层各钉同一串字面量」才拦得住。
+   * 改文案时两处一起改，否则必有一层变红。
+   */
+  check(
+    '负库存警告的文案（与 preview/mock.ts 必须逐字一致）',
+    r.ok && r.warning === '「M3螺丝」库存已为负（-55 个），请及时补货',
+    r.ok ? JSON.stringify(r.warning) : ''
+  )
 
   section('7. 输入校验')
   check('空名称被拒绝', (await applyTransaction({ time: '', name: '', quantity: 1, type: 'in' })).ok === false)

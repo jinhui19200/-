@@ -1505,8 +1505,18 @@ async function run(page, shot) {
   const exportRows = await page.$$eval('table.table tbody tr', (rs) => rs.length)
   check('记录页有数据可供导出', exportRows > 0, `${exportRows} 行`)
 
-  // alert 要一起换掉：导出成功/失败时代码都会弹 alert，那是**阻塞**对话框。
+  /*
+   * alert 要一起换掉：导出成功/失败时代码都会弹 alert，那是**阻塞**对话框。
+   *
+   * ⚠️ 原函数必须存下来，用完还原（见本节末尾）。这个坑 2026-09-23 真踩过：
+   * 当时只写了 `window.alert = () => {}` 没还原，于是**后面所有小节**里
+   * 依赖 alert 的断言全部静默失效 —— 代码明明调了 alert、文案也对，
+   * 但 dialog 事件永远不会到 Node 侧，断言只能看到空数组。
+   * 9c 的负库存告警就是这么被废掉的（用探针拦 window.alert 才定位到）。
+   */
   const patchOk = await page.evaluate(() => {
+    window.__origAlert = window.alert
+    window.__origExportXlsx = window.api.exportXlsx
     window.alert = () => {}
     window.__export = null
     window.api.exportXlsx = async (data, name) => {
@@ -1557,6 +1567,38 @@ async function run(page, shot) {
       JSON.stringify([...new Set(rows.slice(1).map((r) => r[hCol]))].slice(0, 6))
     )
   }
+
+  // 用完必须还原：这个桩是**全局**的，留着会静默废掉后面所有 alert 断言
+  const restoredGlobals = await page.evaluate(() => {
+    const stubAlert = window.alert
+    const stubExport = window.api.exportXlsx
+    // 先确认「原函数确实存下来了」——否则下面 window.alert = undefined 也会
+    // 让 `undefined === undefined` 为真，判据就成了空的
+    const hadOrigAlert = typeof window.__origAlert === 'function'
+    const hadOrigExport = typeof window.__origExportXlsx === 'function'
+    window.alert = window.__origAlert
+    window.api.exportXlsx = window.__origExportXlsx
+    return {
+      hadOrigAlert,
+      hadOrigExport,
+      // 还原成功的判据：指向原函数，且确实不再是那个桩
+      okAlert: hadOrigAlert && window.alert === window.__origAlert && window.alert !== stubAlert,
+      okExport:
+        hadOrigExport &&
+        window.api.exportXlsx === window.__origExportXlsx &&
+        window.api.exportXlsx !== stubExport
+    }
+  })
+  check(
+    '第 9 节替换掉的 window.alert 已还原（否则后面所有依赖 alert 的断言都会被静默废掉）',
+    restoredGlobals.okAlert,
+    JSON.stringify(restoredGlobals)
+  )
+  check(
+    '被替换的 window.api.exportXlsx 也已还原',
+    restoredGlobals.okExport,
+    JSON.stringify(restoredGlobals)
+  )
 
   // ── 9b. 重命名 ───────────────────────────────────────────
   /*
@@ -2085,6 +2127,89 @@ async function run(page, shot) {
     '取消没写盘：关掉弹窗后库存不变',
     (await qtyOf(TGT)) === afterQty,
     `${await qtyOf(TGT)} vs ${afterQty}`
+  )
+
+  // 9c-3 从弹窗提交一笔「出库」—— 上面只提交过入库，出库是另一条分支
+  /*
+   * 按「入口 × 分支」的矩阵，弹窗这个入口下还有「出库」这个分支没走过：
+   * 出库有自己的 warning 路径（负库存只警告不阻断），而且表单的
+   * 经手人/领取人标签会跟着 type 变。只测弹窗的入库，等于出库那半边没验。
+   */
+  await switchTab(page, '仓库')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(300)
+
+  const dialogsBefore = dialogs.length
+  await clickRowBtn(TGT, '出库')
+  await page.waitForSelector('.modal-overlay')
+  await page.waitForTimeout(250)
+
+  const outModalForm = page.locator('.modal .tx-form')
+  const outModalLabels = await outModalForm.locator('.tx-field label').allTextContents()
+  check(
+    '弹窗切到出库后，标签变成「领取人」（跟 type 走，不是写死的）',
+    outModalLabels.some((l) => l.trim().startsWith('领取人')) &&
+      !outModalLabels.some((l) => l.trim().startsWith('经手人')),
+    outModalLabels.join('|')
+  )
+
+  // 出库量故意超过库存 → 走「负库存只警告不阻断」这条分支
+  const OUT_AMT = afterQty + 5
+  await outModalForm.locator('input[type="number"]').fill(String(OUT_AMT))
+  await page.waitForTimeout(150)
+  await outModalForm.locator('button[type="submit"]').click()
+  /*
+   * alert 是渲染进程里同步阻塞的，dialog 事件到 Node 侧是异步的 —— 给它一点时间，
+   * 别用固定 sleep 赌时长。
+   *
+   * 这里踩过一次：一开始断言一直看到空数组，看着像「负库存没弹警告」，
+   * 实际是第 9 节把 window.alert 换成了空函数没还原（见本节之前的还原断言），
+   * 代码其实调了、文案也对。定位手段是用探针把 window.alert 拦下来看调用记录 ——
+   * 「dialog 没到」和「alert 没调」是两回事，先分清再改断言。
+   */
+  for (let i = 0; i < 40; i++) {
+    if (dialogs.length > dialogsBefore) break
+    await sleep(100)
+  }
+  check('出库提交后弹窗同样自己关掉', (await page.locator('.modal-overlay').count()) === 0)
+
+  const afterOutQty = await qtyOf(TGT)
+  check(
+    `出库 ${OUT_AMT} 后库存 ${afterQty} → -5（负库存只警告不阻断）`,
+    afterOutQty === -5,
+    `实际 ${afterOutQty}`
+  )
+
+  const newDialogs = dialogs.slice(dialogsBefore)
+  check(
+    '负库存弹了警告（而不是静默写入）',
+    newDialogs.some((d) => d.type === 'alert' && d.message.includes('库存已为负')),
+    JSON.stringify(newDialogs)
+  )
+  /*
+   * 钉住**逐字文案**。这段告警在两个地方各写了一份：真实数据层
+   * （src/main/store/transactions.ts）与界面自检用的内存替身（preview/mock.ts）。
+   * 界面层测的是替身 —— 替身改了而真实实现没改，这里照样绿，用户却看到另一句话。
+   * 所以 verify-store.ts 里也钉了同一串字面量，两层一起改才不会漏。
+   */
+  check(
+    '警告逐字文案与真实数据层一致（含物品名、负数库存、单位、补货提示）',
+    newDialogs.some((d) => d.message === `「${TGT}」库存已为负（-5 ${tgtUnit}），请及时补货`),
+    JSON.stringify(newDialogs.map((d) => d.message))
+  )
+
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(400)
+  const rowsAfterOut = await recRows()
+  const wantedOut = `${TGT}|出库|${OUT_AMT}|${tgtUnit}`
+  check(
+    `多了一条「${TGT} / 出库 / ${OUT_AMT} ${tgtUnit}」的记录（按内容数，不靠行位置）`,
+    rowsAfterOut.filter((r) => recKey(r) === wantedOut).length ===
+      recRowsAfter.filter((r) => recKey(r) === wantedOut).length + 1,
+    `${rowsAfterOut.filter((r) => recKey(r) === wantedOut).length} vs ${
+      recRowsAfter.filter((r) => recKey(r) === wantedOut).length + 1
+    }`
   )
 
   // ── 10. 控制台 ───────────────────────────────────────────
