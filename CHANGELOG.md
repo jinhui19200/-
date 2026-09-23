@@ -140,6 +140,31 @@ preload 链路通、渲染资源确实来自 `app.asar`、报表页全部功能�
 - 交付时需说明：macOS 未公证，首次打开要「右键 → 打开」；
   Windows 未签名，首次运行要过 SmartScreen（「更多信息 → 仍要运行」）
 
+**⚠️ 打包 ≠ 发布 —— 这一步一开始漏了（2026-09-23 补上）**
+
+打包脚本里带了 `--publish never`（当初是为了防止 tag 构建时 electron-builder
+隐式去发 Release、没 `GH_TOKEN` 就报错把已经打好的包一起带挂）。
+副作用是：**包打好了，但仓库里一个 Release 都没有** —— v1.2.0 / v1.3.0 也一样，
+产物只躺在 GitHub Actions 的 artifacts 里（要登录 GitHub 才能下，而且会过期），
+对外**没有可下载的页面**。
+
+→ 用 `gh release upload` 补发了 v1.4.0：
+
+- 页面：`https://github.com/jinhui19200/warehouse-management-system/releases/tag/v1.4.0`
+- 附件：`warehouse-manager-1.4.0-arm64.dmg`（134.5 MB）、
+  `warehouse-manager-1.4.0-setup.exe`（106.5 MB），均为 `state=uploaded`
+- 校验：从下载 URL 取前 1 MB 与本地文件比 sha256，**逐字节一致**
+
+**发布时踩的坑**：用 `urllib` 直传 134.5 MB 的 DMG，传到 13 分钟时
+`BrokenPipeError: [Errno 32] Broken pipe` —— 实测直连只有约 165 KB/s，
+长时间大文件传输会被掐断，而且 `stdout` 被缓冲，进程被杀时连「传到哪一步」
+都看不到（改用 `python3 -u` 才有输出）。
+换成 `gh release upload` 一次就过，**3 分 8 秒**传完 241 MB（约 1.3 MB/s）。
+结论：**发布附件一律用 `gh release upload`，别自己用 urllib/curl 裸传大文件。**
+
+（另：`urllib` 那次失败前已经建好了 Release 壳子，所以重传前要先确认
+`assets` 是空的、别把半截文件当成已上传 —— 附件状态看 `state` 是否为 `uploaded`。）
+
 **踩到的坑：右键菜单「闪一下就没」**
 
 菜单挂载后立刻被关掉，而且极具迷惑性 —— 菜单**在 DOM 里确实出现过**
