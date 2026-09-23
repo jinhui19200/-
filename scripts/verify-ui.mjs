@@ -2056,6 +2056,7 @@ async function run(page, shot) {
     tgtUnit !== '' && (await mUnit.getAttribute('readonly')) !== null,
     tgtUnit || '(空)'
   )
+  await shot(page, '6-行内入库弹窗')
 
   const beforeQty = await qtyOf(TGT)
   const IN_AMT = 7
@@ -2156,6 +2157,8 @@ async function run(page, shot) {
   // 出库量故意超过库存 → 走「负库存只警告不阻断」这条分支
   const OUT_AMT = afterQty + 5
   await outModalForm.locator('input[type="number"]').fill(String(OUT_AMT))
+  await page.waitForTimeout(200)
+  await shot(page, '7-行内出库弹窗')
   await page.waitForTimeout(150)
   await outModalForm.locator('button[type="submit"]').click()
   /*
