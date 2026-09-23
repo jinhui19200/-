@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type {
   DB,
   DeleteRecordResult,
+  RenameItemResult,
   SetThresholdResult,
   TransactionInput,
   TransactionResult
@@ -21,6 +22,7 @@ export interface AppData {
   applyTransaction: (input: TransactionInput) => Promise<TransactionResult>
   deleteRecord: (id: string) => Promise<DeleteRecordResult>
   setItemThreshold: (id: string, threshold: number) => Promise<SetThresholdResult>
+  renameItem: (id: string, name: string, unit?: string) => Promise<RenameItemResult>
   exportXlsx: (data: number[], defaultName: string) => Promise<{
     ok: boolean
     path?: string
@@ -78,7 +80,14 @@ export function useAppData(): AppData {
   const exportXlsx = useCallback(async (data: number[], defaultName: string) => {
     return window.api.exportXlsx(data, defaultName)
   }, [])
-
+  const renameItem = useCallback(
+    async (id: string, name: string, unit?: string): Promise<RenameItemResult> => {
+      const result = await window.api.renameItem(id, name, unit)
+      if (result.ok) await refresh()
+      return result
+    },
+    [refresh]
+  )
   const openDataFolder = useCallback(async () => {
     return window.api.openDataFolder()
   }, [])
@@ -144,6 +153,7 @@ export function useAppData(): AppData {
     applyTransaction,
     deleteRecord,
     setItemThreshold,
+    renameItem,
     exportXlsx,
     openDataFolder
   }

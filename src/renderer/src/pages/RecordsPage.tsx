@@ -1,11 +1,14 @@
 import { useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
-import type { StockRecord } from '@shared/types'
+import type { Item, RenameItemResult, StockRecord } from '@shared/types'
 import { displayDateTime, formatQuantity, HANDLER_COLUMN, handlerLabel } from '@shared/utils'
+import { NameCell, useRenameFlow } from '../components/RenameName'
 
 interface Props {
+  items: Item[]
   records: StockRecord[]
   deleteRecord: (id: string) => Promise<unknown>
+  renameItem: (id: string, name: string, unit?: string) => Promise<RenameItemResult>
   exportXlsx: (data: number[], defaultName: string) => Promise<{
     ok: boolean
     path?: string
@@ -14,13 +17,24 @@ interface Props {
   }>
 }
 
-export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React.JSX.Element {
+export function RecordsPage({
+  items,
+  records,
+  deleteRecord,
+  renameItem,
+  exportXlsx
+}: Props): React.JSX.Element {
   const [search, setSearch] = useState('')
   const [filterType, setFilterType] = useState<'all' | 'in' | 'out'>('all')
   /** 时间范围，格式 'YYYY-MM-DD'；空串表示该端不限制。两端都是闭区间，含当日 */
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [exporting, setExporting] = useState(false)
+
+  const rename = useRenameFlow(items, records, renameItem)
+
+  /** 按 id 反查物品 —— 记录页改的是**物品**，不是这一条记录 */
+  const itemById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
 
   const rangeInvalid = Boolean(dateFrom && dateTo && dateFrom > dateTo)
 
@@ -198,7 +212,7 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
           <thead>
             <tr>
               <th>时间</th>
-              <th>名称</th>
+              <th title="双击或右键名称可以改名">名称</th>
               <th className="num">数量</th>
               <th>单位</th>
               <th>操作人</th>
@@ -211,7 +225,23 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
             {filtered.map((record) => (
               <tr key={record.id}>
                 <td className="mono">{displayDateTime(record.time)}</td>
-                <td>{record.name}</td>
+                <td>
+                  {/*
+                    改的是**物品**的名字，不是这一条记录 —— 记录里的 name 只是
+                    这个物品的标签快照，单独改一条会让它和所属物品对不上。
+                    找不到对应物品（数据异常）时退化成纯文本，不给编辑入口。
+                  */}
+                  {itemById.has(record.itemId) ? (
+                    <NameCell
+                      name={record.name}
+                      onRename={(next) =>
+                        rename.request(itemById.get(record.itemId) as Item, next)
+                      }
+                    />
+                  ) : (
+                    record.name
+                  )}
+                </td>
                 <td className="num">{formatQuantity(record.quantity)}</td>
                 <td>{record.unit}</td>
                 <td
@@ -246,6 +276,8 @@ export function RecordsPage({ records, deleteRecord, exportXlsx }: Props): React
           </tbody>
         </table>
       )}
+
+      {rename.dialog}
     </section>
   )
 }

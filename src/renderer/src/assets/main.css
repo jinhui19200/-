@@ -292,6 +292,80 @@ body {
   background: var(--warn-bg);
 }
 
+/*
+ * 仓库页表格用**定宽列**。
+ *
+ * 默认的自动列宽会把 100% 宽里的富余空间按内容比例摊给每一列，于是
+ * 「单位」（表头文字只有 25px）被撑到 87px、「警戒值」被撑到 171px，
+ * 两列之间就空出一大片。列宽定死之后，富余宽度只留给**没写宽度的「名称」列**。
+ *
+ * 各列宽度写在 JSX 的 <colgroup> 里 —— 和表头挨着，改列的时候不容易漏。
+ * 刻意只给仓库页加这个类：记录页列数不同，也没有需要压窄的列，
+ * 跟着一起改会让那边的表头换行。
+ */
+.table-cols-fixed {
+  table-layout: fixed;
+}
+
+/* ===== 名称单元格（双击 / 右键改名） ===== */
+/*
+ * 平时长得像纯文本，鼠标移上去才浮出一条虚线下边框，暗示「这里可以改」。
+ * 用 border-bottom 而不是 text-decoration：下划线贴着文字基线，
+ * 虚线的位置稳定，也不会因为文字里有下划线字符而看混。
+ */
+.name-text {
+  cursor: text;
+  border-bottom: 1px dashed transparent;
+}
+
+.name-text:hover {
+  border-bottom-color: var(--border);
+}
+
+.name-input {
+  width: 100%;
+  max-width: 320px;
+  font: inherit;
+  font-size: 13.5px;
+  padding: 3px 7px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+}
+
+/* ===== 右键菜单 ===== */
+.ctx-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 132px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+.ctx-item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.ctx-item:hover {
+  background: var(--hit-bg);
+}
+
 .search-note {
   margin: 0 0 12px;
   font-size: 12px;
@@ -442,6 +516,81 @@ body {
 
 .modal-close:hover {
   color: var(--text);
+}
+
+/* 合并确认框的正文与底部按钮条。出入库表单走的是 .modal .tx-form，
+   两者互不干扰（各自的容器类不同）。 */
+.modal-body {
+  padding: 12px 20px 4px;
+}
+
+.modal-text {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--text);
+}
+
+.modal-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+/* 两边单位不一致时才出现 */
+.unit-choice {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.unit-choice-title {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.unit-choice-btns {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.unit-choice-input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+}
+
+.unit-choice-input:focus {
+  border-color: var(--accent);
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 20px 18px;
+}
+
+.btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #1d4fd7;
+  border-color: #1d4fd7;
+  opacity: 1;
 }
 
 .modal .tx-form {

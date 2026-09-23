@@ -29,6 +29,7 @@ export default function App() {
     applyTransaction,
     deleteRecord,
     setItemThreshold,
+    renameItem,
     exportXlsx,
     openDataFolder
   } = useAppData()
@@ -98,13 +99,16 @@ export default function App() {
             records={db.records}
             applyTransaction={applyTransaction}
             setItemThreshold={setItemThreshold}
+            renameItem={renameItem}
             exportXlsx={exportXlsx}
           />
         )}
         {ready && tab === 'records' && (
           <RecordsPage
+            items={db.items}
             records={db.records}
             deleteRecord={deleteRecord}
+            renameItem={renameItem}
             exportXlsx={exportXlsx}
           />
         )}

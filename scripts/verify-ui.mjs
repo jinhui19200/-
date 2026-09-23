@@ -1558,6 +1558,264 @@ async function run(page, shot) {
     )
   }
 
+  // ── 9b. 重命名 ───────────────────────────────────────────
+  /*
+   * 改名这条链要验四件事，少一件都可能「看着能用、实际不对」：
+   *   1. 双击能进编辑态，回车能提交
+   *   2. 改完之后**仓库 / 记录 / 报表三页都变** —— 记录里存的是名称快照，
+   *      只改物品不改快照的话，记录页会一直显示旧名字
+   *   3. 右键菜单里也能改名（用户不知道能双击时的第二条路）
+   *   4. 撞名要合并，且**单位不一致时必须弹出选单位的框** ——
+   *      这是唯一会让库存数量失去物理意义的路径，不能静默走掉
+   *
+   * 放在第 9 节之后：这一节会改名、还会并掉一个物品，
+   * 前面的用例都依赖固定的物品名与数量，不能被打乱。
+   */
+  section('9b. 重命名物品（双击 / 右键 / 撞名合并）')
+
+  /** 仓库页里第一格文字正好等于 name 的行下标；找不到返回 -1 */
+  const whRowIdx = (page, name) =>
+    page.evaluate((n) => {
+      const rows = [...document.querySelectorAll('table.table tbody tr')]
+      return rows.findIndex((r) => r.querySelector('td')?.textContent?.trim() === n)
+    }, name)
+
+  /** 记录页里「名称」列等于 name 的第一行下标（按表头名取列，不按下标） */
+  const recRowIdx = (page, name) =>
+    page.evaluate((n) => {
+      const t = document.querySelector('table.table')
+      const ths = [...t.querySelectorAll('thead th')]
+      const i = ths.findIndex((th) => th.textContent.trim() === '名称')
+      const rows = [...t.querySelectorAll('tbody tr')]
+      return rows.findIndex((r) => r.querySelectorAll('td')[i]?.textContent?.trim() === n)
+    }, name)
+
+  /** 当前表格里所有名称（仓库页取第一格，记录页取「名称」列） */
+  const whNames = (page) =>
+    page.evaluate(() =>
+      [...document.querySelectorAll('table.table tbody tr')].map(
+        (r) => r.querySelector('td')?.textContent?.trim() ?? ''
+      )
+    )
+
+  /** 记录页「名称」列的全部取值（按表头名取列，不按下标） */
+  const recNames = (page) =>
+    page.evaluate(() => {
+      const t = document.querySelector('table.table')
+      const ths = [...t.querySelectorAll('thead th')]
+      const i = ths.findIndex((th) => th.textContent.trim() === '名称')
+      return [...t.querySelectorAll('tbody tr')].map(
+        (r) => r.querySelectorAll('td')[i]?.textContent?.trim() ?? ''
+      )
+    })
+
+  /** 等某个名字出现（改名是异步落盘 + 广播刷新，不能立刻断言） */
+  const waitName = async (page, name, listFn = whNames) => {
+    for (let i = 0; i < 40; i++) {
+      if ((await listFn(page)).includes(name)) return true
+      await sleep(100)
+    }
+    return false
+  }
+
+  await switchTab(page, '仓库')
+  await page.waitForSelector('table.table')
+
+  // ── 双击改名 ─────────────────────────────────────────────
+  const OLD = '焊锡丝 0.8mm'
+  const NEW1 = '焊锡丝 无铅'
+  const idx0 = await whRowIdx(page, OLD)
+  check('找得到待改名的物品「焊锡丝 0.8mm」', idx0 >= 0, `下标 ${idx0}`)
+
+  await page.locator('table.table tbody tr').nth(idx0).locator('.name-text').dblclick()
+  check('双击后出现名称编辑框', await page.locator('input.name-input').isVisible())
+  check(
+    '编辑框里预填的是当前名称',
+    (await page.locator('input.name-input').inputValue()) === OLD,
+    await page.locator('input.name-input').inputValue()
+  )
+
+  await page.locator('input.name-input').fill(NEW1)
+  await page.locator('input.name-input').press('Enter')
+  check('回车提交后编辑框消失', (await page.locator('input.name-input').count()) === 0)
+  check('仓库页出现了新名称', await waitName(page, NEW1))
+  check('仓库页里旧名称已消失', !(await whNames(page)).includes(OLD))
+  check('改名不改物品数量（12 卷还在）', await page.evaluate(() =>
+    [...document.querySelectorAll('table.table tbody tr')]
+      .filter((r) => r.querySelector('td')?.textContent?.trim() === '焊锡丝 无铅')
+      .map((r) => r.querySelectorAll('td')[1]?.textContent?.trim())[0] === '12'
+  ))
+
+  // ── 三页同步 ─────────────────────────────────────────────
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  check('记录页出现了新名称（名称快照被一起改了）', await waitName(page, NEW1, recNames))
+  check(
+    '记录页里旧名称一条都不剩',
+    await page.evaluate(() =>
+      ![...document.querySelectorAll('table.table tbody tr')].some((r) =>
+        [...r.querySelectorAll('td')].some((td) => td.textContent.trim() === '焊锡丝 0.8mm')
+      )
+    )
+  )
+
+  await switchTab(page, '报表')
+  await page.waitForSelector('.report-card')
+  check(
+    '报表页的卡片标题也变成了新名称',
+    await page.evaluate(() =>
+      [...document.querySelectorAll('.report-name')].some((e) => e.textContent.trim() === '焊锡丝 无铅')
+    )
+  )
+
+  // ── 右键菜单改名（记录页，作用范围是整个物品） ───────────
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  const NEW2 = '焊锡丝 免洗'
+  const rIdx = await recRowIdx(page, NEW1)
+  check('记录页找得到该物品的记录', rIdx >= 0, `下标 ${rIdx}`)
+
+  await page.locator('table.table tbody tr').nth(rIdx).locator('.name-text').click({ button: 'right' })
+  check('右键弹出菜单', await page.locator('.ctx-menu').isVisible())
+  check(
+    '菜单里有「修改名称」',
+    (await page.locator('.ctx-menu .ctx-item').allTextContents()).includes('修改名称'),
+    (await page.locator('.ctx-menu .ctx-item').allTextContents()).join('|')
+  )
+  await page.locator('.ctx-menu .ctx-item', { hasText: '修改名称' }).click()
+  check('点菜单后进入编辑态', await page.locator('input.name-input').isVisible())
+  await page.locator('input.name-input').fill(NEW2)
+  await page.locator('input.name-input').press('Enter')
+
+  check(
+    '在记录页改名 → 该物品的**所有**记录一起变（不是只改这一条）',
+    await (async () => {
+      for (let i = 0; i < 40; i++) {
+        const all = await page.evaluate(() => {
+          const t = document.querySelector('table.table')
+          const ths = [...t.querySelectorAll('thead th')]
+          const i = ths.findIndex((th) => th.textContent.trim() === '名称')
+          return [...t.querySelectorAll('tbody tr')].map((r) => r.querySelectorAll('td')[i]?.textContent?.trim())
+        })
+        if (all.includes('焊锡丝 免洗') && !all.includes('焊锡丝 无铅')) return true
+        await sleep(100)
+      }
+      return false
+    })()
+  )
+
+  await switchTab(page, '仓库')
+  await page.waitForSelector('table.table')
+  check('记录页改名同样反映到仓库页', await waitName(page, NEW2))
+
+  // ── 撞名合并：单位不一致必须弹选单位的框 ─────────────────
+  const itemsBeforeMerge = await rowCount(page)
+  const pcbQty = await page.evaluate(() =>
+    Number(
+      [...document.querySelectorAll('table.table tbody tr')]
+        .filter((r) => r.querySelector('td')?.textContent?.trim() === 'PCB 打样板')
+        .map((r) => r.querySelectorAll('td')[1]?.textContent?.trim())[0]
+    )
+  )
+  const solderQty = await page.evaluate(() =>
+    Number(
+      [...document.querySelectorAll('table.table tbody tr')]
+        .filter((r) => r.querySelector('td')?.textContent?.trim() === '焊锡丝 免洗')
+        .map((r) => r.querySelectorAll('td')[1]?.textContent?.trim())[0]
+    )
+  )
+
+  const mergeIdx = await whRowIdx(page, NEW2)
+  await page.locator('table.table tbody tr').nth(mergeIdx).locator('.name-text').dblclick()
+  await page.locator('input.name-input').fill('PCB 打样板')
+  await page.locator('input.name-input').press('Enter')
+
+  check('撞名时弹出合并确认框', await page.locator('.modal').isVisible())
+  check(
+    '确认框标题是「合并到已有物品」',
+    (await page.locator('.modal-header h3').textContent()) === '合并到已有物品',
+    await page.locator('.modal-header h3').textContent()
+  )
+  check(
+    '单位不一致 → 出现选单位的区域',
+    (await page.locator('.unit-choice').count()) === 1
+  )
+  const unitBtns = await page.locator('.unit-choice-btns button').allTextContents()
+  check(
+    '两个单位都作为按钮给出（卷、块各一个）',
+    JSON.stringify([...unitBtns].sort()) === JSON.stringify(['块', '卷'].sort()),
+    unitBtns.join('|')
+  )
+  // 顺序也有意义：第一个是**保留下来的那个物品**的单位，也就是默认选项。
+  // 反过来（默认选被并掉的那方的单位）会让用户一不留神就把库存改成另一个量纲。
+  check(
+    '默认排在第一个的是保留方（PCB）的单位「块」',
+    unitBtns[0] === '块',
+    unitBtns.join('|')
+  )
+  check('还有输入新单位的输入框', (await page.locator('.unit-choice-input').count()) === 1)
+
+  // 先验「取消」不留痕：合并是不可逆的，取消必须真的什么都不做
+  await page.locator('.modal-actions .btn', { hasText: '取消' }).click()
+  check('取消后对话框关闭', (await page.locator('.modal').count()) === 0)
+  check('取消后物品没有被并掉', (await whNames(page)).includes(NEW2))
+  check('取消后物品数不变', (await rowCount(page)) === itemsBeforeMerge)
+
+  // 再来一次，这回真合并
+  await page.locator('table.table tbody tr').nth(await whRowIdx(page, NEW2)).locator('.name-text').dblclick()
+  await page.locator('input.name-input').fill('PCB 打样板')
+  await page.locator('input.name-input').press('Enter')
+  await page.locator('.unit-choice-btns button', { hasText: '卷' }).click()
+  await page.locator('.modal-actions .btn', { hasText: '合并' }).click()
+
+  check('合并后对话框关闭', (await page.locator('.modal').count()) === 0)
+  check('合并后被并掉的物品名消失', !(await whNames(page)).includes(NEW2))
+  check('物品数少了一个', (await rowCount(page)) === itemsBeforeMerge - 1, `${await rowCount(page)}`)
+  check(
+    '数量按「卷」累加（PCB 的 0 + 焊锡丝的 12 = 12）',
+    await (async () => {
+      for (let i = 0; i < 40; i++) {
+        const q = await page.evaluate(() =>
+          [...document.querySelectorAll('table.table tbody tr')]
+            .filter((r) => r.querySelector('td')?.textContent?.trim() === 'PCB 打样板')
+            .map((r) => r.querySelectorAll('td')[1]?.textContent?.trim())[0]
+        )
+        if (Number(q) === pcbQty + solderQty) return true
+        await sleep(100)
+      }
+      return false
+    })(),
+    `期望 ${pcbQty + solderQty}`
+  )
+  check(
+    '合并后单位用的是选中的「卷」',
+    await page.evaluate(() =>
+      [...document.querySelectorAll('table.table tbody tr')]
+        .filter((r) => r.querySelector('td')?.textContent?.trim() === 'PCB 打样板')
+        .map((r) => r.querySelectorAll('td')[2]?.textContent?.trim())[0] === '卷'
+    )
+  )
+
+  // ── 单位一致时不该出现选单位的区域 ───────────────────────
+  const idleIdx = await whRowIdx(page, '闲置物料 X')
+  check('找得到「闲置物料 X」', idleIdx >= 0, `下标 ${idleIdx}`)
+  await page.locator('table.table tbody tr').nth(idleIdx).locator('.name-text').dblclick()
+  await page.locator('input.name-input').fill('贴片电阻 10kΩ')
+  await page.locator('input.name-input').press('Enter')
+  check('撞名时仍然弹合并确认框', (await page.locator('.modal').count()) === 1)
+  check(
+    '两边单位都是「个」→ 不出现选单位的区域（不该让用户白选一次）',
+    (await page.locator('.unit-choice').count()) === 0
+  )
+  await page.locator('.modal-actions .btn', { hasText: '取消' }).click()
+  check('取消后「闲置物料 X」还在', (await whNames(page)).includes('闲置物料 X'))
+
+  // 改名不该写流水
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  const recAfterRename = await page.$$eval('table.table tbody tr', (rs) => rs.length)
+  check('改名与合并都没有产生新的出入库流水', recAfterRename === exportRows, `${recAfterRename} vs ${exportRows}`)
+
   // ── 10. 控制台 ───────────────────────────────────────────
   section('10. 渲染进程控制台')
   check('无 console.error / pageerror', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))

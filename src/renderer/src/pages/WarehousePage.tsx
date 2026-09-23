@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import * as XLSX from 'xlsx'
 import type {
   Item,
+  RenameItemResult,
   SetThresholdResult,
   StockRecord,
   TransactionInput,
@@ -17,12 +18,14 @@ import {
   pinMatches
 } from '@shared/utils'
 import { TransactionForm } from '../components/TransactionForm'
+import { NameCell, useRenameFlow } from '../components/RenameName'
 
 interface Props {
   items: Item[]
   records: StockRecord[]
   applyTransaction: (input: TransactionInput) => Promise<TransactionResult>
   setItemThreshold: (id: string, threshold: number) => Promise<SetThresholdResult>
+  renameItem: (id: string, name: string, unit?: string) => Promise<RenameItemResult>
   exportXlsx: (data: number[], defaultName: string) => Promise<{
     ok: boolean
     path?: string
@@ -98,12 +101,15 @@ export function WarehousePage({
   records,
   applyTransaction,
   setItemThreshold,
+  renameItem,
   exportXlsx
 }: Props): React.JSX.Element {
   const [modalType, setModalType] = useState<'in' | 'out' | null>(null)
   const [modalName, setModalName] = useState('')
   const [query, setQuery] = useState('')
   const [exporting, setExporting] = useState(false)
+
+  const rename = useRenameFlow(items, records, renameItem)
 
   const month = currentMonth()
   const monthLabel = `${Number(month.slice(5))}月`
@@ -247,10 +253,20 @@ export function WarehousePage({
         <p className="search-note">没有名称包含「{query.trim()}」的物品，下面是全部 {items.length} 种。</p>
       )}
 
-      <table className="table">
+      <table className="table table-cols-fixed">
+        <colgroup>
+          {/* 名称列不写宽度，吃掉其余列定宽之后剩下的全部空间 */}
+          <col />
+          <col style={{ width: 76 }} />
+          <col style={{ width: 56 }} />
+          <col style={{ width: 100 }} />
+          <col style={{ width: 132 }} />
+          <col style={{ width: 132 }} />
+          <col style={{ width: 130 }} />
+        </colgroup>
         <thead>
           <tr>
-            <th>名称</th>
+            <th title="双击或右键名称可以改名">名称</th>
             <th className="num">数量</th>
             <th>单位</th>
             <th className="num">警戒值</th>
@@ -269,7 +285,9 @@ export function WarehousePage({
                 key={item.id}
                 className={[low ? 'row-low' : '', hit ? 'row-hit' : ''].filter(Boolean).join(' ')}
               >
-                <td>{item.name}</td>
+                <td>
+                  <NameCell name={item.name} onRename={(next) => rename.request(item, next)} />
+                </td>
                 <td
                   className={[
                     'num',
@@ -355,6 +373,8 @@ export function WarehousePage({
           </div>
         </div>
       )}
+
+      {rename.dialog}
     </section>
   )
 }

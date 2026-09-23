@@ -9,6 +9,7 @@ import type {
   DB,
   DeleteRecordResult,
   Item,
+  RenameItemResult,
   SetThresholdResult,
   StockRecord,
   TransactionInput,
@@ -266,6 +267,88 @@ function setItemThreshold(id: string, threshold: number): SetThresholdResult {
   return { ok: true, item: { ...target } }
 }
 
+/**
+ * 重命名物品。语义与主进程 store 的 `renameItem` 保持一致：
+ * 单纯改名时同步历史记录的 name 快照；撞名时合并（搬记录、累加数量、删源物品）。
+ *
+ * 演示模式下没有真实写盘，但**必须镜像同一套规则** ——
+ * 否则界面自检验的是 mock 的行为，与真实应用对不上，等于白验。
+ */
+function renameItem(id: string, rawName: string, unit?: string): RenameItemResult {
+  const name = normalizeName(rawName ?? '')
+  if (!name) return { ok: false, error: '名称不能为空' }
+
+  if (!db.items.some((i) => i.id === id)) {
+    return { ok: false, error: '物品不存在，可能已被删除' }
+  }
+
+  const next = clone()
+  const stamp = new Date().toISOString()
+  const src = next.items.find((i) => i.id === id) as Item
+
+  if (src.name === name) {
+    return { ok: true, item: { ...src }, merged: false, movedRecords: 0, renamedRecords: 0 }
+  }
+
+  const target = next.items.find((i) => i.name === name && i.id !== id)
+
+  if (!target) {
+    const oldName = src.name
+    src.name = name
+    src.updatedAt = stamp
+    let renamedRecords = 0
+    for (const r of next.records) {
+      if (r.itemId !== id) continue
+      r.name = name
+      renamedRecords++
+    }
+    db = next
+    notify()
+    return {
+      ok: true,
+      item: { ...src },
+      merged: false,
+      mergedFrom: oldName,
+      movedRecords: 0,
+      renamedRecords
+    }
+  }
+
+  const unitConflict =
+    target.unit === src.unit ? undefined : { keptUnit: target.unit, otherUnit: src.unit }
+  const chosenUnit = (unit ?? '').trim() || target.unit
+
+  target.quantity = roundQuantity(target.quantity + src.quantity)
+  target.unit = chosenUnit
+  target.updatedAt = stamp
+
+  let movedRecords = 0
+  for (const r of next.records) {
+    if (r.itemId !== id) continue
+    r.itemId = target.id
+    r.name = target.name
+    movedRecords++
+  }
+  next.items = next.items.filter((i) => i.id !== id)
+
+  db = next
+  notify()
+
+  return {
+    ok: true,
+    item: { ...target },
+    merged: true,
+    mergedFrom: src.name,
+    movedRecords,
+    renamedRecords: 0,
+    unitConflict,
+    warning:
+      target.quantity < 0
+        ? `「${target.name}」合并后库存为负（${target.quantity} ${target.unit}），请及时补货`
+        : undefined
+  }
+}
+
 const api = {
   ping: async (): Promise<string> => 'pong',
   getSnapshot: async (): Promise<DB> => clone(),
@@ -274,6 +357,8 @@ const api = {
   deleteRecord: async (id: string): Promise<DeleteRecordResult> => deleteRecord(id),
   setItemThreshold: async (id: string, threshold: number): Promise<SetThresholdResult> =>
     setItemThreshold(id, threshold),
+  renameItem: async (id: string, name: string, unit?: string): Promise<RenameItemResult> =>
+    renameItem(id, name, unit),
   exportXlsx: async (): Promise<{ ok: boolean; error?: string }> => ({
     ok: false,
     error: '演示模式不会真的写出文件；真实应用中这里会弹出保存对话框'

@@ -3,6 +3,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type {
   DB,
   DeleteRecordResult,
+  RenameItemResult,
   SetThresholdResult,
   TransactionInput,
   TransactionResult
@@ -52,6 +53,13 @@ const api = {
   /** 修改物品警戒值 */
   setItemThreshold: (id: string, threshold: number): Promise<SetThresholdResult> =>
     ipcRenderer.invoke('db:setThreshold', id, threshold),
+
+  /**
+   * 重命名物品。撞名时会与已有物品**合并**，可用 `unit` 指定合并后使用的单位；
+   * 不传则沿用目标物品的单位。
+   */
+  renameItem: (id: string, name: string, unit?: string): Promise<RenameItemResult> =>
+    ipcRenderer.invoke('db:renameItem', id, name, unit),
 
   /** 导出 Excel */
   exportXlsx: (data: number[], defaultName: string): Promise<{

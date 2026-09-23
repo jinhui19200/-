@@ -93,3 +93,35 @@ export type DeleteRecordResult =
 
 /** 修改物品警戒值 */
 export type SetThresholdResult = { ok: true; item: Item } | { ok: false; error: string }
+
+/**
+ * 重命名物品的结果。
+ *
+ * 「改名」有两种落法，用 {@link merged} 区分：
+ *  - 新名字没人用 → 单纯改名，物品本身 + 它名下所有历史记录的 `name` 快照一起改
+ *  - 新名字已被别的物品占用 → **合并**：记录搬到目标物品名下、数量累加、源物品删除
+ */
+export type RenameItemResult =
+  | {
+      ok: true
+      /** 改名后的物品；发生合并时是**保留下来的那一个**（目标物品） */
+      item: Item
+      /** 是否发生了「与已有物品同名」的合并 */
+      merged: boolean
+      /** 被合并掉的物品名（等于新名字）。未合并时为 undefined */
+      mergedFrom?: string
+      /** 合并时搬运到目标物品名下的记录条数 */
+      movedRecords: number
+      /** 单纯改名时，跟着一起改了名字快照的记录条数 */
+      renamedRecords: number
+      /**
+       * 合并时两边单位不一致。界面据此提示用户改单位。
+       *
+       * `keptUnit` 是目标物品（保留下来的那个）原本的单位，
+       * `otherUnit` 是被并掉的那个物品的单位。
+       */
+      unitConflict?: { keptUnit: string; otherUnit: string }
+      /** 非致命提示，例如合并后库存为负 */
+      warning?: string
+    }
+  | { ok: false; error: string }

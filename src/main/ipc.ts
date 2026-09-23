@@ -2,7 +2,7 @@ import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { writeFile } from 'node:fs/promises'
 import type { TransactionInput } from '@shared/types'
 import { getDataDir, getDataFilePath, getLoadReport, getSnapshot } from './store/db'
-import { applyTransaction, deleteRecord, setItemThreshold } from './store/transactions'
+import { applyTransaction, deleteRecord, renameItem, setItemThreshold } from './store/transactions'
 
 /**
  * 数据变更后广播给所有窗口。
@@ -54,6 +54,21 @@ export function registerIpcHandlers(): void {
     if (result.ok) broadcastChanged()
     return result
   })
+
+  /**
+   * 重命名物品（撞名时合并）。
+   *
+   * 改名会同时改动该物品名下所有历史记录的 name 快照，并可能删掉一个物品，
+   * 所以成功后必须广播 —— 仓库、记录、报表三页都靠这个事件重新拉取快照。
+   */
+  ipcMain.handle(
+    'db:renameItem',
+    async (_event, id: string, name: string, unit?: string) => {
+      const result = await renameItem(id, name, unit)
+      if (result.ok) broadcastChanged()
+      return result
+    }
+  )
 
   /** 导出 Excel：渲染进程生成 buffer，主进程弹 dialog 保存 */
   ipcMain.handle('export:xlsx', async (_event, data: number[], defaultName: string) => {

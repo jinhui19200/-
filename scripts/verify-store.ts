@@ -10,7 +10,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDataFilePath, getLoadReport, getSnapshot, initStore, load } from '../src/main/store/db'
-import { applyTransaction, deleteRecord, setItemThreshold } from '../src/main/store/transactions'
+import { applyTransaction, deleteRecord, renameItem, setItemThreshold } from '../src/main/store/transactions'
 import {
   DEFAULT_THRESHOLD,
   HANDLER_COLUMN,
@@ -510,6 +510,200 @@ async function main(): Promise<void> {
     '列名同时含两种叫法（一条记录非入即出，共用一个字段）',
     HANDLER_COLUMN === '经手人/领取人',
     HANDLER_COLUMN
+  )
+
+  // ── 23. 重命名（改名 + 撞名合并） ─────────────────────────
+  section('23. 重命名物品')
+  initStore(dir)
+  await load()
+
+  // 单独造一批物品，避免和前面用例的状态纠缠
+  const rnA = await applyTransaction({
+    time: '2026-09-21T09:00',
+    name: '待改名甲',
+    quantity: 10,
+    unit: '个',
+    type: 'in'
+  })
+  const rnB = await applyTransaction({
+    time: '2026-09-21T10:00',
+    name: '待改名乙',
+    quantity: 3,
+    unit: '个',
+    type: 'in'
+  })
+  await applyTransaction({ time: '2026-09-21T11:00', name: '待改名甲', quantity: 5, unit: '个', type: 'in' })
+  if (!rnA.ok || !rnB.ok) throw new Error('重命名用例的前置数据没造出来')
+
+  // ── 23a. 单纯改名 ────────────────────────────────────────
+  // 改名前后比条数，而不是写死一个数字 —— 前面十几节用例已经往同一个
+  // 数据目录里攒了一堆记录，写死数字只会得到一个「看着像功能坏了」的假失败
+  const recordsBeforeRename = getSnapshot().records.length
+  const plain = await renameItem(rnA.item.id, '改名后的甲')
+  check('改名成功', plain.ok === true, plain.ok ? '' : plain.error)
+  if (plain.ok) {
+    check('物品名已更新', plain.item.name === '改名后的甲', plain.item.name)
+    check('不是合并', plain.merged === false)
+    check('同步改了 2 条历史记录的名称', plain.renamedRecords === 2, `${plain.renamedRecords}`)
+  }
+  const snapAfterRename = getSnapshot()
+  check(
+    '旧名字在记录里彻底消失（记录页不会和新名字对不上）',
+    !snapAfterRename.records.some((rec) => rec.name === '待改名甲')
+  )
+  check(
+    '这 2 条记录的 itemId 没变（还挂在这个物品名下）',
+    snapAfterRename.records.filter((rec) => rec.itemId === rnA.item.id).length === 2,
+    `${snapAfterRename.records.filter((rec) => rec.itemId === rnA.item.id).length}`
+  )
+  check(
+    '改名不动数量',
+    snapAfterRename.items.find((i) => i.id === rnA.item.id)?.quantity === 15,
+    `${snapAfterRename.items.find((i) => i.id === rnA.item.id)?.quantity}`
+  )
+  check(
+    '改名不写新流水（记录总数不变）',
+    snapAfterRename.records.length === recordsBeforeRename,
+    `${recordsBeforeRename} → ${snapAfterRename.records.length}`
+  )
+
+  // 名字没变（含只改空白）应当静默无操作，而不是报错或白写一次盘
+  const same = await renameItem(rnA.item.id, '  改名后的甲  ')
+  check('只改首尾空白 → 归一化后同名，视为无操作', same.ok && same.renamedRecords === 0, JSON.stringify(same))
+
+  const emptyName = await renameItem(rnA.item.id, '   ')
+  check('空名被拒绝', emptyName.ok === false, JSON.stringify(emptyName))
+  const ghost = await renameItem('不存在的-id', '随便什么')
+  check('物品不存在时返回错误', ghost.ok === false, JSON.stringify(ghost))
+
+  // ── 23b. 撞名合并（单位不一致） ──────────────────────────
+  const rnC = await applyTransaction({
+    time: '2026-09-21T12:00',
+    name: '待改名丙',
+    quantity: 7,
+    unit: '盒',
+    type: 'in'
+  })
+  if (!rnC.ok) throw new Error('重命名用例的前置数据没造出来')
+
+  const merged = await renameItem(rnC.item.id, '待改名乙')
+  check('撞名 → 合并成功', merged.ok === true && merged.merged === true, JSON.stringify(merged))
+  if (merged.ok) {
+    check('保留下来的目标物品（不是被并的那个）', merged.item.id === rnB.item.id)
+    check('数量累加 3 + 7 = 10', merged.item.quantity === 10, `${merged.item.quantity}`)
+    check('搬过来 1 条记录', merged.movedRecords === 1, `${merged.movedRecords}`)
+    check(
+      '单位不一致时带回 unitConflict 供界面提示',
+      merged.unitConflict?.keptUnit === '个' && merged.unitConflict?.otherUnit === '盒',
+      JSON.stringify(merged.unitConflict)
+    )
+    check('没指定单位 → 沿用目标物品的单位', merged.item.unit === '个', merged.item.unit)
+  }
+
+  const snapAfterMerge = getSnapshot()
+  check(
+    '源物品已被删除',
+    !snapAfterMerge.items.some((i) => i.id === rnC.item.id)
+  )
+  const movedRecs = snapAfterMerge.records.filter((rec) => rec.itemId === rnB.item.id)
+  check('目标物品名下现在有 2 条记录', movedRecs.length === 2, `${movedRecs.length}`)
+  check(
+    '搬过来的记录名称改成目标物品名',
+    movedRecs.every((rec) => rec.name === '待改名乙')
+  )
+  check(
+    '搬过来的记录**单位保持原快照**（「7 盒」是当时的计量事实，不能改写成「个」）',
+    movedRecs.some((rec) => rec.unit === '盒'),
+    movedRecs.map((rec) => rec.unit).join('/')
+  )
+
+  // ── 23c. 合并时指定单位 ──────────────────────────────────
+  const rnD = await applyTransaction({
+    time: '2026-09-21T13:00',
+    name: '待改名丁',
+    quantity: 4,
+    unit: '包',
+    type: 'in'
+  })
+  if (!rnD.ok) throw new Error('重命名用例的前置数据没造出来')
+  const mergedWithUnit = await renameItem(rnD.item.id, '待改名乙', '箱')
+  check(
+    '可以指定合并后使用的单位',
+    mergedWithUnit.ok && mergedWithUnit.item.unit === '箱',
+    JSON.stringify(mergedWithUnit.ok ? mergedWithUnit.item.unit : mergedWithUnit)
+  )
+  check(
+    '指定单位后数量继续累加 10 + 4 = 14',
+    mergedWithUnit.ok && mergedWithUnit.item.quantity === 14,
+    `${mergedWithUnit.ok ? mergedWithUnit.item.quantity : '—'}`
+  )
+
+  // 清空单位 → 回落到目标物品的单位，而不是写进空串
+  const rnE = await applyTransaction({
+    time: '2026-09-21T14:00',
+    name: '待改名戊',
+    quantity: 1,
+    unit: '袋',
+    type: 'in'
+  })
+  if (!rnE.ok) throw new Error('重命名用例的前置数据没造出来')
+  const blankUnit = await renameItem(rnE.item.id, '待改名乙', '   ')
+  check(
+    '单位传空串 → 回落成目标物品当前的单位，不会写进空串',
+    blankUnit.ok && blankUnit.item.unit === '箱',
+    JSON.stringify(blankUnit.ok ? blankUnit.item.unit : blankUnit)
+  )
+
+  // ── 23d. 单位一致时不该有 unitConflict ────────────────────
+  const sameA = await applyTransaction({ time: '2026-09-21T15:00', name: '同名甲', quantity: 2, unit: '个', type: 'in' })
+  const sameB = await applyTransaction({ time: '2026-09-21T16:00', name: '同名乙', quantity: 3, unit: '个', type: 'in' })
+  if (!sameA.ok || !sameB.ok) throw new Error('重命名用例的前置数据没造出来')
+  const mergedSameUnit = await renameItem(sameB.item.id, '同名甲')
+  check(
+    '单位一致时不带 unitConflict（界面不该弹选单位的框）',
+    mergedSameUnit.ok && mergedSameUnit.unitConflict === undefined,
+    JSON.stringify(mergedSameUnit.ok ? mergedSameUnit.unitConflict : mergedSameUnit)
+  )
+  check(
+    '单位一致时数量直接相加 2 + 3 = 5',
+    mergedSameUnit.ok && mergedSameUnit.item.quantity === 5,
+    `${mergedSameUnit.ok ? mergedSameUnit.item.quantity : '—'}`
+  )
+
+  // ── 23e. 合并后库存为负要给出提示 ────────────────────────
+  const negA = await applyTransaction({ time: '2026-09-21T17:00', name: '负数甲', quantity: 1, unit: '个', type: 'in' })
+  const negB = await applyTransaction({ time: '2026-09-21T18:00', name: '负数乙', quantity: 10, unit: '个', type: 'out' })
+  if (!negA.ok || !negB.ok) throw new Error('重命名用例的前置数据没造出来')
+  const mergedNeg = await renameItem(negB.item.id, '负数甲')
+  check(
+    '合并后库存为负 → 数量 1 - 10 = -9',
+    mergedNeg.ok && mergedNeg.item.quantity === -9,
+    `${mergedNeg.ok ? mergedNeg.item.quantity : '—'}`
+  )
+  check(
+    '合并后库存为负 → 带出 warning',
+    mergedNeg.ok && typeof mergedNeg.warning === 'string' && mergedNeg.warning.includes('负'),
+    JSON.stringify(mergedNeg.ok ? mergedNeg.warning : mergedNeg)
+  )
+
+  // ── 23f. 改名要真的落盘 ──────────────────────────────────
+  initStore(dir)
+  await load()
+  const reloaded = getSnapshot()
+  check(
+    '重载后改过的名字还在（不是只改了内存）',
+    reloaded.items.some((i) => i.name === '待改名乙') &&
+      !reloaded.items.some((i) => i.name === '待改名丙'),
+    reloaded.items.map((i) => i.name).join('/')
+  )
+  check(
+    '重载后历史记录的名称快照也是新的',
+    reloaded.records.some((rec) => rec.name === '改名后的甲') &&
+      !reloaded.records.some((rec) => rec.name === '待改名甲')
+  )
+  check(
+    '重载后被并掉的物品没有复活',
+    !reloaded.items.some((i) => i.name === '待改名丙' || i.name === '待改名丁')
   )
 
   await rm(dir, { recursive: true, force: true })

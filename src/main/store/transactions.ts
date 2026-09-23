@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type {
   DeleteRecordResult,
   Item,
+  RenameItemResult,
   SetThresholdResult,
   StockRecord,
   TransactionInput,
@@ -186,6 +187,131 @@ export function setItemThreshold(id: string, threshold: unknown): Promise<SetThr
     }
 
     return { ok: true, item: { ...item } }
+  })
+}
+
+/**
+ * 重命名物品。
+ *
+ * 这是**唯一**会去改历史记录内容的操作，所以有几点必须写清楚：
+ *
+ * 1. **为什么连历史记录的 name 快照一起改。**
+ *    `StockRecord.name` 原本刻意存快照（「历史记录是铁证」）。但改名是个例外：
+ *    名字只是这个物品的标签，不是当时的业务事实 —— 用户把「螺丝」改成
+ *    「M3×8 螺丝」之后，如果记录页还显示旧名字，他会以为那是另一个物品，
+ *    三页对不上。所以改名必须三页同步。
+ *
+ * 2. **但记录的 `unit` 快照不动。** 单位是**当时的计量事实**：
+ *    一条「12 包」的历史记录，哪怕物品后来并进了按「个」计数的物品，
+ *    它也确实是 12 包。改掉它就是篡改历史，而且和记录上的数量对不上。
+ *
+ * 3. **撞名即合并。** 新名字已被别的物品占用时，把本物品的记录搬到目标物品名下、
+ *    数量累加、然后删掉本物品。**这条路径下数量可能失去物理意义**
+ *    （2 个 + 12 包 = 14 个），所以单位不一致时会在返回值里带出
+ *    `unitConflict`，由界面提示用户确认/改单位 —— 数据层不替用户决定。
+ *    调用方可以传 `unit` 指定合并后使用的单位；不传就沿用目标物品的。
+ *
+ * 合并是**不可逆**的（源物品被删掉了），所以界面必须先弹确认。
+ */
+export function renameItem(
+  id: string,
+  rawName: string,
+  unit?: string
+): Promise<RenameItemResult> {
+  return enqueue(async () => {
+    const name = normalizeName(rawName ?? '')
+    if (!name) return { ok: false, error: '名称不能为空' }
+
+    const current = await load()
+    if (!current.items.some((i) => i.id === id)) {
+      return { ok: false, error: '物品不存在，可能已被删除' }
+    }
+
+    const next = cloneDB(current)
+    const now = new Date().toISOString()
+    const src = next.items.find((i) => i.id === id) as Item
+
+    // 名字没变：什么都不做。用户在编辑框里原样回车是正常操作，
+    // 不该因此触发一次写盘 + 全窗口广播。
+    if (src.name === name) {
+      return { ok: true, item: { ...src }, merged: false, movedRecords: 0, renamedRecords: 0 }
+    }
+
+    const target = next.items.find((i) => i.name === name && i.id !== id)
+
+    // ── 路径一：单纯改名 ─────────────────────────────────────
+    if (!target) {
+      const oldName = src.name
+      src.name = name
+      src.updatedAt = now
+
+      let renamedRecords = 0
+      for (const r of next.records) {
+        if (r.itemId !== id) continue
+        r.name = name
+        renamedRecords++
+      }
+
+      try {
+        await commit(next)
+      } catch (err) {
+        return { ok: false, error: `保存失败：${String(err)}` }
+      }
+
+      return {
+        ok: true,
+        item: { ...src },
+        merged: false,
+        mergedFrom: oldName,
+        movedRecords: 0,
+        renamedRecords
+      }
+    }
+
+    // ── 路径二：撞名，合并进 target ──────────────────────────
+    const unitConflict =
+      target.unit === src.unit
+        ? undefined
+        : { keptUnit: target.unit, otherUnit: src.unit }
+
+    // 界面没指定就用目标物品的单位。trim 后为空串（用户清空输入框）也回落到目标单位，
+    // 与 normalizeThreshold 的兜底思路一致：不让中间态写进数据。
+    const chosenUnit = (unit ?? '').trim() || target.unit
+
+    target.quantity = roundQuantity(target.quantity + src.quantity)
+    target.unit = chosenUnit
+    target.updatedAt = now
+
+    let movedRecords = 0
+    for (const r of next.records) {
+      if (r.itemId !== id) continue
+      r.itemId = target.id
+      r.name = target.name
+      // r.unit 刻意保持原快照 —— 见函数头注释第 2 条
+      movedRecords++
+    }
+
+    next.items = next.items.filter((i) => i.id !== id)
+
+    try {
+      await commit(next)
+    } catch (err) {
+      return { ok: false, error: `保存失败：${String(err)}` }
+    }
+
+    return {
+      ok: true,
+      item: { ...target },
+      merged: true,
+      mergedFrom: src.name,
+      movedRecords,
+      renamedRecords: 0,
+      unitConflict,
+      warning:
+        target.quantity < 0
+          ? `「${target.name}」合并后库存为负（${target.quantity} ${target.unit}），请及时补货`
+          : undefined
+    }
   })
 }
 
