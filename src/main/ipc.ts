@@ -2,7 +2,7 @@ import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { writeFile } from 'node:fs/promises'
 import type { TransactionInput } from '@shared/types'
 import { getDataDir, getDataFilePath, getLoadReport, getSnapshot } from './store/db'
-import { applyTransaction, deleteRecord, renameItem, setItemThreshold } from './store/transactions'
+import { applyTransaction, deleteRecord, renameItem, setItemQuantity, setItemThreshold } from './store/transactions'
 
 /**
  * 数据变更后广播给所有窗口。
@@ -54,6 +54,21 @@ export function registerIpcHandlers(): void {
     if (result.ok) broadcastChanged()
     return result
   })
+
+  /**
+   * 强行修改库存数量（需口令）。
+   *
+   * 口令的校验点在数据层，不在这个 handler 里 —— 界面上的口令框只是交互，
+   * 绕过它直接 invoke 本通道必须同样被拒。这里只负责「成功才广播」。
+   */
+  ipcMain.handle(
+    'db:setQuantity',
+    async (_event, id: string, quantity: number, password: string) => {
+      const result = await setItemQuantity(id, quantity, password)
+      if (result.ok) broadcastChanged()
+      return result
+    }
+  )
 
   /**
    * 重命名物品（撞名时合并）。

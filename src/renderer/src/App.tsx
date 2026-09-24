@@ -29,6 +29,7 @@ export default function App() {
     applyTransaction,
     deleteRecord,
     setItemThreshold,
+    setItemQuantity,
     renameItem,
     exportXlsx,
     openDataFolder
@@ -99,6 +100,7 @@ export default function App() {
             records={db.records}
             applyTransaction={applyTransaction}
             setItemThreshold={setItemThreshold}
+            setItemQuantity={setItemQuantity}
             renameItem={renameItem}
             exportXlsx={exportXlsx}
           />

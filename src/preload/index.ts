@@ -4,6 +4,7 @@ import type {
   DB,
   DeleteRecordResult,
   RenameItemResult,
+  SetQuantityResult,
   SetThresholdResult,
   TransactionInput,
   TransactionResult
@@ -53,6 +54,13 @@ const api = {
   /** 修改物品警戒值 */
   setItemThreshold: (id: string, threshold: number): Promise<SetThresholdResult> =>
     ipcRenderer.invoke('db:setThreshold', id, threshold),
+
+  /**
+   * 强行修改库存数量。`password` 会原样送到数据层校验 ——
+   * 界面上那道口令框只是交互，这里才是必经之路。
+   */
+  setItemQuantity: (id: string, quantity: number, password: string): Promise<SetQuantityResult> =>
+    ipcRenderer.invoke('db:setQuantity', id, quantity, password),
 
   /**
    * 重命名物品。撞名时会与已有物品**合并**，可用 `unit` 指定合并后使用的单位；

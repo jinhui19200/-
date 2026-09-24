@@ -3,6 +3,7 @@ import type {
   DeleteRecordResult,
   Item,
   RenameItemResult,
+  SetQuantityResult,
   SetThresholdResult,
   StockRecord,
   TransactionInput,
@@ -10,6 +11,7 @@ import type {
 } from '@shared/types'
 import {
   DEFAULT_THRESHOLD,
+  matchesQuantityPassword,
   normalizeName,
   normalizeThreshold,
   roundQuantity,
@@ -179,6 +181,76 @@ export function setItemThreshold(id: string, threshold: unknown): Promise<SetThr
     if (item.threshold === value) return { ok: true, item: { ...item } }
 
     item.threshold = value
+
+    try {
+      await commit(next)
+    } catch (err) {
+      return { ok: false, error: `保存失败：${String(err)}` }
+    }
+
+    return { ok: true, item: { ...item } }
+  })
+}
+
+/**
+ * 强行修改某个物品的库存数量（需口令）。
+ *
+ * 这是**唯一**能凭空改库存、却不留任何流水的入口，所以几点必须写清楚：
+ *
+ * 1. **为什么刻意不写流水。** `StockRecord.type` 只有 in / out，没有任何合法值
+ *    能表示「校正」。硬塞一条 in/out 更糟：它会被算进「本月入库/出库」的统计，
+ *    撤销时还会按方向再反向冲销一遍 —— 一个凭空的差值被反复加减，
+ *    账会越算越乱。代价是这次修改**在记录页查不到**，所以界面必须先过口令、
+ *    并在提交前把「从多少改成多少」摆给用户看。
+ *
+ * 2. **允许任意有限数，包括负数和 0。** 库存允许为负是本系统既有的语义
+ *    （见 applyTransaction 的负库存 warning），强行修改更不该在这里替用户把关。
+ *
+ * 3. **非法输入一律拒绝，不回落默认值 —— 这一点与 setItemThreshold 相反。**
+ *    改警戒值时的空串是「用户正在清空重填」的中间态，回落 100 是合理的；
+ *    而这里是用户明确按了「确认修改」，此刻的空串/非数字只可能是错误，
+ *    静默写成某个值等于伪造了一次没人确认过的修改。
+ *
+ * 4. **口令校验在读盘之前。** 口令不对时连 load() 都不做：既快，
+ *    也让「口令错」和「物品不存在」不可能被时序凑成同一种表现。
+ */
+export function setItemQuantity(
+  id: string,
+  rawQuantity: unknown,
+  password: unknown
+): Promise<SetQuantityResult> {
+  return enqueue(async () => {
+    // 口令规则与界面共用同一个函数（见 matchesQuantityPassword 的注释）：
+    // 界面那道只是交互，这里才是绕过它直接 invoke 时唯一的防线
+    if (!matchesQuantityPassword(password)) {
+      return { ok: false, error: '口令不正确', wrongPassword: true }
+    }
+
+    // 空串要单独挡掉：Number('') === 0，不特判就会把「用户清空了没填」
+    // 当成「改成 0」静默写进数据。与 normalizeThreshold 同款处理。
+    if (rawQuantity === null || rawQuantity === undefined) {
+      return { ok: false, error: '数量不能为空' }
+    }
+    if (typeof rawQuantity === 'string' && rawQuantity.trim() === '') {
+      return { ok: false, error: '数量不能为空' }
+    }
+
+    const quantity = Number(rawQuantity)
+    if (!Number.isFinite(quantity)) return { ok: false, error: '数量必须是数字' }
+
+    const current = await load()
+    const target = current.items.find((i) => i.id === id)
+    if (!target) return { ok: false, error: '物品不存在，可能已被删除' }
+
+    const next = cloneDB(current)
+    const item = next.items.find((i) => i.id === id) as Item
+    const value = roundQuantity(quantity)
+
+    // 没变就什么都不做：避免白写一次盘 + 一次全窗口广播
+    if (item.quantity === value) return { ok: true, item: { ...item } }
+
+    item.quantity = value
+    item.updatedAt = new Date().toISOString()
 
     try {
       await commit(next)

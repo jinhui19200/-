@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx'
 import type {
   Item,
   RenameItemResult,
+  SetQuantityResult,
   SetThresholdResult,
   StockRecord,
   TransactionInput,
@@ -19,12 +20,14 @@ import {
 } from '@shared/utils'
 import { TransactionForm } from '../components/TransactionForm'
 import { NameCell, useRenameFlow } from '../components/RenameName'
+import { QuantityCell, useQuantityFlow } from '../components/QuantityCell'
 
 interface Props {
   items: Item[]
   records: StockRecord[]
   applyTransaction: (input: TransactionInput) => Promise<TransactionResult>
   setItemThreshold: (id: string, threshold: number) => Promise<SetThresholdResult>
+  setItemQuantity: (id: string, quantity: number, password: string) => Promise<SetQuantityResult>
   renameItem: (id: string, name: string, unit?: string) => Promise<RenameItemResult>
   exportXlsx: (data: number[], defaultName: string) => Promise<{
     ok: boolean
@@ -101,6 +104,7 @@ export function WarehousePage({
   records,
   applyTransaction,
   setItemThreshold,
+  setItemQuantity,
   renameItem,
   exportXlsx
 }: Props): React.JSX.Element {
@@ -110,6 +114,7 @@ export function WarehousePage({
   const [exporting, setExporting] = useState(false)
 
   const rename = useRenameFlow(items, records, renameItem)
+  const quantity = useQuantityFlow(items, setItemQuantity)
 
   const month = currentMonth()
   const monthLabel = `${Number(month.slice(5))}月`
@@ -267,7 +272,9 @@ export function WarehousePage({
         <thead>
           <tr>
             <th title="双击或右键名称可以改名">名称</th>
-            <th className="num">数量</th>
+            <th className="num" title="双击或右键数量可以强行修改（需口令）">
+              数量
+            </th>
             <th>单位</th>
             <th className="num">警戒值</th>
             <th className="num">本月入库（{monthLabel}）</th>
@@ -296,9 +303,8 @@ export function WarehousePage({
                   ]
                     .filter(Boolean)
                     .join(' ')}
-                  title={low ? `低于警戒值 ${formatQuantity(item.threshold)}` : undefined}
                 >
-                  {formatQuantity(item.quantity)}
+                  <QuantityCell item={item} low={low} onRequest={quantity.request} />
                 </td>
                 <td>{item.unit}</td>
                 <td className="num">
@@ -375,6 +381,7 @@ export function WarehousePage({
       )}
 
       {rename.dialog}
+      {quantity.dialog}
     </section>
   )
 }

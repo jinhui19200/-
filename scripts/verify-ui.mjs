@@ -2215,6 +2215,182 @@ async function run(page, shot) {
     }`
   )
 
+  // ── 9d. 强行修改数量（双击 / 右键 + 口令） ────────────────
+  section('9d. 仓库页：强行修改数量（双击 / 右键 + 口令）')
+
+  /*
+   * 此刻页面停在记录页（9c 结尾切过来的）。先在**改数之前**记下记录条数 ——
+   * 这一节要验「强行改数不写流水」，而 9c 自己刚往记录里加过两条，
+   * 拿更早的 recBefore 比会凭空多出 2 的差额，看着像功能坏了。
+   */
+  const recBeforeQtyEdit = await rowCount(page)
+
+  await switchTab(page, '仓库')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(300)
+
+  // 仍然取第一行：上游小节改过名、合过并，写死名字必然失配
+  const QTY_TGT = (await whNames(page))[0]
+  const qtyBeforeEdit = await qtyOf(QTY_TGT)
+  check(
+    '取到待改数量的物品',
+    Boolean(QTY_TGT) && Number.isFinite(qtyBeforeEdit),
+    `${QTY_TGT} / ${qtyBeforeEdit}`
+  )
+
+  /** 等对话框关掉（成功关窗是异步的：要等一次 IPC 往返 + 广播刷新） */
+  const waitModalGone = async () => {
+    for (let i = 0; i < 40; i++) {
+      if ((await page.locator('.modal-overlay').count()) === 0) return true
+      await sleep(100)
+    }
+    return false
+  }
+
+  const qtyCellAt = async (name) => {
+    const i = await whRowIdx(page, name)
+    return page.locator('table.table tbody tr').nth(i).locator('.qty-text')
+  }
+
+  // ── 9d-1 双击进入：第一步只给口令 ─────────────────────────
+  await (await qtyCellAt(QTY_TGT)).dblclick()
+  await page.waitForSelector('.modal-overlay')
+  await page.waitForTimeout(200)
+  check('双击数量 → 弹出对话框', (await page.locator('.modal-overlay').count()) === 1)
+  check(
+    `对话框标题是「修改数量 — ${QTY_TGT}」（按标题语义区分共用的 .modal 类名）`,
+    (await modalTitle()) === `修改数量—${QTY_TGT}`.replace(/\s/g, ''),
+    JSON.stringify(await modalTitle())
+  )
+  check(
+    '第一步只有口令框、**没有**数字框（验证在前、改数在后是物理事实，不是流程约定）',
+    (await page.locator('.modal input[type="password"]').count()) === 1 &&
+      (await page.locator('.modal input[type="number"]').count()) === 0,
+    `password=${await page.locator('.modal input[type="password"]').count()} ` +
+      `number=${await page.locator('.modal input[type="number"]').count()}`
+  )
+
+  // ── 9d-2 口令错：一步都不许往下走 ─────────────────────────
+  const PWD = '771204'
+  await page.locator('.modal input[type="password"]').fill('000000')
+  await page.locator('.modal .btn-primary').click()
+  await page.waitForTimeout(200)
+  check(
+    '口令错误 → 仍停在第一步（数字框没有出现）',
+    (await page.locator('.modal input[type="number"]').count()) === 0
+  )
+  /*
+   * 读「框内错误提示」必须带短超时 + catch。
+   *
+   * 这里踩过一次：写成裸的 `.textContent()`，一旦提示没出现，playwright 会
+   * **超时 30 秒然后抛错**，把整个自检脚本崩掉 —— 后面 9d-5 ~ 9d-8 一条都跑不到，
+   * 而报出来的只是一句「locator.textContent: Timeout」，
+   * 看着像脚本坏了，实际是「提示没出现」这条断言该红而已。
+   * 会崩的断言比会红的断言危险得多：它把后面的证据一起吞掉。
+   */
+  const modalErrorText = async () =>
+    ((await page.locator('.modal-error').first().textContent({ timeout: 1500 }).catch(() => null)) ??
+      '')
+  check(
+    '口令错误 → 框内给出提示（不是静默什么都不做）',
+    (await modalErrorText()).includes('口令'),
+    JSON.stringify(await modalErrorText())
+  )
+  check(
+    '口令错误 → 对话框不关（关掉会让人以为「改成功了」）',
+    (await page.locator('.modal-overlay').count()) === 1
+  )
+
+  // ── 9d-3 口令对：这时才放开数字框 ─────────────────────────
+  /*
+   * 先判存在再操作：口令框若已经不在（说明界面没停在第一步），
+   * 裸的 fill() 会超时 30 秒抛错、把整个脚本崩掉，9d-4 之后一条都跑不到。
+   * 那种情况下上面两条断言已经红了，这里不该再吞掉后面的证据。
+   */
+  const pwdInput = page.locator('.modal input[type="password"]')
+  if ((await pwdInput.count()) > 0) {
+    await pwdInput.fill(PWD)
+    await page.locator('.modal .btn-primary').click()
+    await page.waitForTimeout(250)
+  }
+  check('口令正确 → 出现数字输入框', (await page.locator('.modal input[type="number"]').count()) === 1)
+  const numInput = page.locator('.modal input[type="number"]')
+  check(
+    '数字框预填当前数量',
+    (await numInput.inputValue()) === String(qtyBeforeEdit),
+    await numInput.inputValue()
+  )
+  await shot(page, '8-改数量-口令通过')
+
+  // ── 9d-4 数字留空：拒绝，不许静默改成 0 ───────────────────
+  await numInput.fill('')
+  await page.locator('.modal .btn-primary').click()
+  await page.waitForTimeout(200)
+  check(
+    '数字留空 → 拒绝并留在对话框里（Number(\'\') === 0，不特判就会静默写成 0）',
+    (await page.locator('.modal-overlay').count()) === 1 &&
+      (await page.locator('.modal-error').count()) >= 1,
+    `overlay=${await page.locator('.modal-overlay').count()}`
+  )
+
+  // ── 9d-5 真改成新值 ───────────────────────────────────────
+  const NEW_QTY = qtyBeforeEdit + 33
+  await numInput.fill(String(NEW_QTY))
+  await page.locator('.modal .btn-primary').click()
+  check('提交后对话框自己关掉', await waitModalGone())
+  check(`数量变成 ${NEW_QTY}`, (await qtyOf(QTY_TGT)) === NEW_QTY, `实际 ${await qtyOf(QTY_TGT)}`)
+
+  // ── 9d-6 不留流水 ─────────────────────────────────────────
+  await switchTab(page, '记录')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(400)
+  const recAfterQtyEdit = await rowCount(page)
+  check(
+    '强行改数不写流水（记录页条数不变）',
+    recAfterQtyEdit === recBeforeQtyEdit,
+    `${recBeforeQtyEdit} → ${recAfterQtyEdit}`
+  )
+
+  // ── 9d-7 右键是第二个入口，且允许改成负数 ─────────────────
+  await switchTab(page, '仓库')
+  await page.waitForSelector('table.table')
+  await page.waitForTimeout(300)
+  await (await qtyCellAt(QTY_TGT)).click({ button: 'right' })
+  check('右键数量 → 弹出菜单', await page.locator('.ctx-menu').isVisible())
+  check(
+    '菜单里有「修改数量」',
+    (await page.locator('.ctx-menu .ctx-item').allTextContents()).includes('修改数量'),
+    (await page.locator('.ctx-menu .ctx-item').allTextContents()).join('|')
+  )
+  await page.locator('.ctx-menu .ctx-item', { hasText: '修改数量' }).click()
+  await page.waitForSelector('.modal-overlay')
+  await page.waitForTimeout(200)
+  check('点菜单项 → 同样弹出改数量对话框', (await page.locator('.modal-overlay').count()) === 1)
+
+  await page.locator('.modal input[type="password"]').fill(PWD)
+  await page.locator('.modal .btn-primary').click()
+  await page.waitForTimeout(250)
+  await page.locator('.modal input[type="number"]').fill('-3')
+  await page.locator('.modal .btn-primary').click()
+  check('右键入口提交后同样自己关窗', await waitModalGone())
+  check(
+    '允许改成负数（库存可以为负是本系统的既有语义）',
+    (await qtyOf(QTY_TGT)) === -3,
+    `实际 ${await qtyOf(QTY_TGT)}`
+  )
+
+  // ── 9d-8 取消不该改数 ─────────────────────────────────────
+  await (await qtyCellAt(QTY_TGT)).dblclick()
+  await page.waitForSelector('.modal-overlay')
+  await page.waitForTimeout(200)
+  await page.locator('.modal .btn:not(.btn-primary)').click()
+  await page.waitForTimeout(200)
+  check(
+    '点「取消」→ 对话框关掉，数量保持 -3（没被改）',
+    (await page.locator('.modal-overlay').count()) === 0 && (await qtyOf(QTY_TGT)) === -3,
+    `overlay=${await page.locator('.modal-overlay').count()} qty=${await qtyOf(QTY_TGT)}`
+  )
+
   // ── 10. 控制台 ───────────────────────────────────────────
   section('10. 渲染进程控制台')
   check('无 console.error / pageerror', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' | '))

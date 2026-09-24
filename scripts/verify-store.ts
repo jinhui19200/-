@@ -10,7 +10,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { getDataFilePath, getLoadReport, getSnapshot, initStore, load } from '../src/main/store/db'
-import { applyTransaction, deleteRecord, renameItem, setItemThreshold } from '../src/main/store/transactions'
+import { applyTransaction, deleteRecord, renameItem, setItemQuantity, setItemThreshold } from '../src/main/store/transactions'
 import {
   DEFAULT_THRESHOLD,
   HANDLER_COLUMN,
@@ -20,6 +20,7 @@ import {
   monthLabel,
   monthlySeries,
   pinMatches,
+  QUANTITY_EDIT_PASSWORD,
   recentMonths
 } from '../src/shared/utils'
 
@@ -717,6 +718,139 @@ async function main(): Promise<void> {
   check(
     '重载后被并掉的物品没有复活',
     !reloaded.items.some((i) => i.name === '待改名丙' || i.name === '待改名丁')
+  )
+
+  // ── 24. 强行修改库存数量（需口令） ────────────────────────
+  section('24. 强行修改库存数量（需口令）')
+  initStore(dir)
+  await load()
+
+  const qtyItem = getSnapshot().items.find((i) => i.name === '待改名乙')
+  if (!qtyItem) throw new Error('改数量用例的前置物品没找到')
+  const qtyBefore = qtyItem.quantity
+  const recordsBeforeQty = getSnapshot().records.length
+
+  // ── 24a. 口令不对：一步都不能往下走 ──────────────────────
+  const badPwd = await setItemQuantity(qtyItem.id, 999, '000000')
+  check('口令错误 → 拒绝', badPwd.ok === false, JSON.stringify(badPwd))
+  check(
+    '口令错误 → 带 wrongPassword（界面据此退回口令那一步）',
+    !badPwd.ok && badPwd.wrongPassword === true,
+    JSON.stringify(badPwd)
+  )
+  check(
+    '口令错误 → 数量一个字都没动',
+    getSnapshot().items.find((i) => i.id === qtyItem.id)?.quantity === qtyBefore,
+    `${getSnapshot().items.find((i) => i.id === qtyItem.id)?.quantity} vs ${qtyBefore}`
+  )
+
+  // 口令缺失的各种形态都要挡住：String(undefined) 是 'undefined'，
+  // 不特判就会有人靠「传 undefined 恰好不等于口令」这种巧合过掉
+  for (const [label, pwd] of [
+    ['空串', ''],
+    ['undefined', undefined],
+    ['null', null],
+    ['纯空白', '   '],
+    ['数字 771204（类型不对）', 771204],
+    // String(['771204']) 也等于 '771204' —— 不严格比类型的话，这种也能混过去
+    ['单元素数组', ['771204']],
+    ['771204 中间夹了空格', '7712 04'],
+    ['前缀不同的 1771204', '1771204']
+  ] as const) {
+    const r0 = await setItemQuantity(qtyItem.id, 999, pwd as unknown as string)
+    check(`口令「${label}」→ 拒绝`, r0.ok === false, JSON.stringify(r0))
+  }
+
+  // 首尾空白刻意宽容：粘贴口令时带空格是常见手滑，判成「口令不正确」
+  // 只会让人怀疑自己记错了口令
+  const spacedPwd = await setItemQuantity(qtyItem.id, 111, ' 771204 ')
+  check(
+    '口令带首尾空白 → 放行（粘贴手滑，不该判成口令错）',
+    spacedPwd.ok === true && spacedPwd.item.quantity === 111,
+    JSON.stringify(spacedPwd)
+  )
+
+  // 口令校验发生在找物品之前：口令错时，连「物品不存在」都不该被说出来
+  const ghostWrongPwd = await setItemQuantity('不存在的-id', 1, 'x')
+  check(
+    '口令错优先于「物品不存在」（先验口令，再找物品）',
+    ghostWrongPwd.ok === false && ghostWrongPwd.wrongPassword === true,
+    JSON.stringify(ghostWrongPwd)
+  )
+
+  // ── 24b. 口令正确：改成功，且不写流水 ────────────────────
+  const okSet = await setItemQuantity(qtyItem.id, 321, QUANTITY_EDIT_PASSWORD)
+  check('口令正确 → 改成 321', okSet.ok && okSet.item.quantity === 321, JSON.stringify(okSet))
+  check(
+    '强行改数不写流水（记录数不变）',
+    getSnapshot().records.length === recordsBeforeQty,
+    `${recordsBeforeQty} → ${getSnapshot().records.length}`
+  )
+  check(
+    '内存快照同步',
+    getSnapshot().items.find((i) => i.id === qtyItem.id)?.quantity === 321
+  )
+
+  const diskAfterQty = JSON.parse(await readFile(getDataFilePath(), 'utf8'))
+  check(
+    '数量已落盘（不是只改了内存）',
+    diskAfterQty.items.find((i: { id: string }) => i.id === qtyItem.id)?.quantity === 321
+  )
+
+  // 只动指定的那一个物品，别的不许被牵连
+  const otherQty = getSnapshot().items.find((i) => i.id !== qtyItem.id) as { id: string; quantity: number }
+  const otherBefore = otherQty.quantity
+  await setItemQuantity(qtyItem.id, 777, QUANTITY_EDIT_PASSWORD)
+  check(
+    '只改指定的那个物品，其他物品的数量不动',
+    getSnapshot().items.find((i) => i.id === otherQty.id)?.quantity === otherBefore
+  )
+
+  // ── 24c. 负数 / 0 / 小数都允许 ───────────────────────────
+  // 库存允许为负是本系统的既有语义（出库超库存只警告不阻断），
+  // 强行改数更不该在这里替用户把关
+  const negQty = await setItemQuantity(qtyItem.id, -8, QUANTITY_EDIT_PASSWORD)
+  check('允许改成负数', negQty.ok && negQty.item.quantity === -8, JSON.stringify(negQty))
+  const zeroQty = await setItemQuantity(qtyItem.id, 0, QUANTITY_EDIT_PASSWORD)
+  check('允许改成 0', zeroQty.ok && zeroQty.item.quantity === 0, JSON.stringify(zeroQty))
+  const fracQty = await setItemQuantity(qtyItem.id, 12.5, QUANTITY_EDIT_PASSWORD)
+  check('小数保留（12.5）', fracQty.ok && fracQty.item.quantity === 12.5, JSON.stringify(fracQty))
+
+  // ── 24d. 非法数字一律**拒绝**，不回落默认值 ──────────────
+  // 这一条与警戒值相反，是刻意的：用户已经按了「确认修改」，
+  // 此刻的空串只可能是错误，静默写成某个值等于伪造一次没人确认过的修改
+  for (const [label, bad] of [
+    ['空串', ''],
+    ['纯空白', '   '],
+    ['非数字', 'abc'],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['undefined', undefined],
+    ['null', null]
+  ] as const) {
+    const res = await setItemQuantity(qtyItem.id, bad, QUANTITY_EDIT_PASSWORD)
+    check(`非法数量「${label}」被拒绝`, res.ok === false, JSON.stringify(res))
+  }
+  check(
+    '非法输入被拒后，数量还是上一次成功的 12.5（没被静默改写）',
+    getSnapshot().items.find((i) => i.id === qtyItem.id)?.quantity === 12.5,
+    `${getSnapshot().items.find((i) => i.id === qtyItem.id)?.quantity}`
+  )
+
+  // ── 24e. 没变就什么都不做 ────────────────────────────────
+  const sameQty = await setItemQuantity(qtyItem.id, 12.5, QUANTITY_EDIT_PASSWORD)
+  check('改成同一个值 → 成功但无操作', sameQty.ok === true && sameQty.item.quantity === 12.5, JSON.stringify(sameQty))
+
+  const ghostQty = await setItemQuantity('不存在的-id', 1, QUANTITY_EDIT_PASSWORD)
+  check('物品不存在时返回错误', ghostQty.ok === false, JSON.stringify(ghostQty))
+
+  // ── 24f. 重启后数量还在 ──────────────────────────────────
+  initStore(dir)
+  await load()
+  check(
+    '重新加载后强行改过的数量仍在（12.5）',
+    getSnapshot().items.find((i) => i.id === qtyItem.id)?.quantity === 12.5,
+    `${getSnapshot().items.find((i) => i.id === qtyItem.id)?.quantity}`
   )
 
   await rm(dir, { recursive: true, force: true })

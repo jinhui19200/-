@@ -3,6 +3,7 @@ import type {
   DB,
   DeleteRecordResult,
   RenameItemResult,
+  SetQuantityResult,
   SetThresholdResult,
   TransactionInput,
   TransactionResult
@@ -22,6 +23,8 @@ export interface AppData {
   applyTransaction: (input: TransactionInput) => Promise<TransactionResult>
   deleteRecord: (id: string) => Promise<DeleteRecordResult>
   setItemThreshold: (id: string, threshold: number) => Promise<SetThresholdResult>
+  /** 强行修改库存数量（需口令，校验在数据层） */
+  setItemQuantity: (id: string, quantity: number, password: string) => Promise<SetQuantityResult>
   renameItem: (id: string, name: string, unit?: string) => Promise<RenameItemResult>
   exportXlsx: (data: number[], defaultName: string) => Promise<{
     ok: boolean
@@ -71,6 +74,15 @@ export function useAppData(): AppData {
   const setItemThreshold = useCallback(
     async (id: string, threshold: number): Promise<SetThresholdResult> => {
       const result = await window.api.setItemThreshold(id, threshold)
+      if (result.ok) await refresh()
+      return result
+    },
+    [refresh]
+  )
+
+  const setItemQuantity = useCallback(
+    async (id: string, quantity: number, password: string): Promise<SetQuantityResult> => {
+      const result = await window.api.setItemQuantity(id, quantity, password)
       if (result.ok) await refresh()
       return result
     },
@@ -153,6 +165,7 @@ export function useAppData(): AppData {
     applyTransaction,
     deleteRecord,
     setItemThreshold,
+    setItemQuantity,
     renameItem,
     exportXlsx,
     openDataFolder

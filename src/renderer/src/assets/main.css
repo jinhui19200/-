@@ -335,6 +335,20 @@ body {
   outline: none;
 }
 
+/*
+ * 数量单元格。样式上给一个「这里能点」的暗示：虚线下划线（悬停才显形，
+ * 免得整列数字都拖着一条线）。跟 .name-text 同一套观感 ——
+ * 仓库页里「名称」和「数量」是仅有的两个可双击改的单元格，看着就该是一类的。
+ */
+.qty-text {
+  cursor: pointer;
+  border-bottom: 1px dashed transparent;
+}
+
+.qty-text:hover {
+  border-bottom-color: var(--border);
+}
+
 /* ===== 右键菜单 ===== */
 .ctx-menu {
   position: fixed;
@@ -538,6 +552,15 @@ body {
   color: var(--text-muted);
 }
 
+/* 改数量对话框里的错误行（口令不对 / 数字非法）。跟 .modal-note 并排出现，
+   所以用同款字号，只把颜色换成警示色，避免整块文字跟着变大变小 */
+.modal-error {
+  margin: 10px 0 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--danger);
+}
+
 /* 两边单位不一致时才出现 */
 .unit-choice {
   margin-top: 14px;
@@ -571,6 +594,28 @@ body {
 }
 
 .unit-choice-input:focus {
+  border-color: var(--accent);
+}
+
+/* 改数量对话框里的口令 / 数字输入框。比 .unit-choice-input 略高一点：
+   它是这个对话框里唯一要操作的东西，做小了两步式会显得像顺手填的小格子 */
+.qty-edit-input {
+  width: 100%;
+  /* 下面是 .modal-note（或 .modal-error），留出间距 ——
+     它们自己是 margin: 0，不靠这一条就会跟输入框贴在一起 */
+  margin-bottom: 10px;
+  font: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.qty-edit-input:focus {
   border-color: var(--accent);
 }
 

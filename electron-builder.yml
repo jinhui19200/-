@@ -30,6 +30,17 @@ files:
   - '!**/*.map'
   - '!**/{.DS_Store,Thumbs.db}'
 
+# 语言包瘦身：Electron 自带 55 份 locales，48MB —— 比整个 app.asar（1.4MB）
+# 大三十倍，而界面文案全是中文硬编码，真正用得上的只有中文和英文兜底。
+#
+# 刻意写成**白名单**（列出要留的），而不是黑名单（列出要删的）：
+# Electron 升级时可能新增语言包，黑名单会漏，白名单天然兜住。
+# 这份配置只会删文件、不会加文件：列出的语言若不存在，app-builder-lib
+# 只是跳过清理并打一条 warning，不会因此打包失败。
+electronLanguages:
+  - zh-CN
+  - en-US
+
 mac:
   category: public.app-category.productivity
   # 本机没有 Developer ID 证书，用 ad-hoc（"-"）签名。

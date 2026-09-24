@@ -10,6 +10,7 @@ import type {
   DeleteRecordResult,
   Item,
   RenameItemResult,
+  SetQuantityResult,
   SetThresholdResult,
   StockRecord,
   TransactionInput,
@@ -17,6 +18,7 @@ import type {
 } from '@shared/types'
 import {
   DEFAULT_THRESHOLD,
+  matchesQuantityPassword,
   normalizeName,
   normalizeThreshold,
   roundQuantity,
@@ -268,6 +270,49 @@ function setItemThreshold(id: string, threshold: number): SetThresholdResult {
 }
 
 /**
+ * 强行修改库存数量。语义与主进程 store 的 `setItemQuantity` 保持一致：
+ * 口令不对直接拒（连找物品都不做），非法数字也拒（**不回落默认值**，与警戒值相反），
+ * 合法值直接覆盖、不写流水。
+ *
+ * 演示模式没有真实写盘，但**必须镜像同一套规则** ——
+ * 否则界面自检验的是 mock 的行为，与真实应用对不上，等于白验。
+ */
+function setItemQuantity(
+  id: string,
+  rawQuantity: unknown,
+  password: unknown
+): SetQuantityResult {
+  // 与数据层一致：共用同一个口令判定函数
+  if (!matchesQuantityPassword(password)) {
+    return { ok: false, error: '口令不正确', wrongPassword: true }
+  }
+
+  if (rawQuantity === null || rawQuantity === undefined) {
+    return { ok: false, error: '数量不能为空' }
+  }
+  if (typeof rawQuantity === 'string' && rawQuantity.trim() === '') {
+    return { ok: false, error: '数量不能为空' }
+  }
+
+  const quantity = Number(rawQuantity)
+  if (!Number.isFinite(quantity)) return { ok: false, error: '数量必须是数字' }
+
+  const item = db.items.find((i) => i.id === id)
+  if (!item) return { ok: false, error: '物品不存在，可能已被删除' }
+
+  const next = clone()
+  const target = next.items.find((i) => i.id === id) as Item
+  const value = roundQuantity(quantity)
+  if (target.quantity === value) return { ok: true, item: { ...target } }
+
+  target.quantity = value
+  target.updatedAt = new Date().toISOString()
+  db = next
+  notify()
+  return { ok: true, item: { ...target } }
+}
+
+/**
  * 重命名物品。语义与主进程 store 的 `renameItem` 保持一致：
  * 单纯改名时同步历史记录的 name 快照；撞名时合并（搬记录、累加数量、删源物品）。
  *
@@ -357,6 +402,11 @@ const api = {
   deleteRecord: async (id: string): Promise<DeleteRecordResult> => deleteRecord(id),
   setItemThreshold: async (id: string, threshold: number): Promise<SetThresholdResult> =>
     setItemThreshold(id, threshold),
+  setItemQuantity: async (
+    id: string,
+    quantity: number,
+    password: string
+  ): Promise<SetQuantityResult> => setItemQuantity(id, quantity, password),
   renameItem: async (id: string, name: string, unit?: string): Promise<RenameItemResult> =>
     renameItem(id, name, unit),
   exportXlsx: async (): Promise<{ ok: boolean; error?: string }> => ({

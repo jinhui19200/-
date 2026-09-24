@@ -18,7 +18,14 @@ import { mkdtempSync } from 'node:fs'
 import { readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { DB, RenameItemResult, TransactionResult, DeleteRecordResult } from '@shared/types'
+import type {
+  DB,
+  RenameItemResult,
+  SetQuantityResult,
+  TransactionResult,
+  DeleteRecordResult
+} from '@shared/types'
+import { QUANTITY_EDIT_PASSWORD } from '@shared/utils'
 import { registerIpcHandlers } from '../src/main/ipc'
 import { getDataFilePath, getLoadReport, initStore, load } from '../src/main/store/db'
 
@@ -530,6 +537,69 @@ async function run(): Promise<void> {
   win.destroy()
   win = null
   await rm(rnDir, { recursive: true, force: true })
+
+  // ── 13b. 强行修改数量经 IPC ──────────────────────────────────
+  /*
+   * 这一节验的是「绕过界面」这条路径。
+   *
+   * 界面上那道口令框只是交互，真正的防线在数据层 —— 所以这里**不经过界面**，
+   * 直接 invoke `db:setQuantity`，口令错了必须照样被拒。
+   * 只在界面上拦、数据层放行的实现，在浏览器自检（verify:ui）里能全绿，
+   * 却挡不住任何直接调 IPC 的路径。
+   */
+  section('13b. 强行修改数量经 IPC 落到磁盘（含口令）')
+  const qtyDir = mkdtempSync(join(tmpdir(), 'wm-qty-'))
+  initStore(qtyDir)
+  await load()
+  win = await openWindow()
+  const qtyDataFile = getDataFilePath()
+
+  const qSeed = await evalIn<TransactionResult>(
+    win,
+    TX({ time: '2026-09-20T11:00', name: '改数甲', quantity: 20, unit: '个', type: 'in' })
+  )
+  check('铺好改数用的数据（改数甲 20 个）', qSeed.ok === true)
+  if (!qSeed.ok) throw new Error('改数量用例的前置数据没造出来')
+  const qItemId = qSeed.item.id
+
+  // 口令错：绕过界面直接调 IPC 也必须被拒
+  const qBad = await evalIn<SetQuantityResult>(
+    win,
+    `window.api.setItemQuantity(${JSON.stringify(qItemId)}, 999, "000000")`
+  )
+  check('口令错误 → 绕过界面直接调 IPC 同样被拒', qBad.ok === false, JSON.stringify(qBad))
+  check('口令错误 → 带 wrongPassword（界面据此退回第一步）', !qBad.ok && qBad.wrongPassword === true)
+  const qDiskAfterBad = await readJSON(qtyDataFile)
+  check(
+    '口令错误 → 磁盘上的数量没动（仍是 20）',
+    qDiskAfterBad.items[0].quantity === 20,
+    `${qDiskAfterBad.items[0].quantity}`
+  )
+
+  // 口令对：负数 / 小数都要能改，且要真的落盘
+  const qOk = await evalIn<SetQuantityResult>(
+    win,
+    `window.api.setItemQuantity(${JSON.stringify(qItemId)}, -12.5, ${JSON.stringify(QUANTITY_EDIT_PASSWORD)})`
+  )
+  check(
+    '口令正确 → 改成 -12.5（负数与小数都允许）',
+    qOk.ok && qOk.item.quantity === -12.5,
+    JSON.stringify(qOk)
+  )
+
+  const qDisk = await readJSON(qtyDataFile)
+  check('数量已落盘（-12.5）', qDisk.items[0].quantity === -12.5, `${qDisk.items[0].quantity}`)
+  check('强行改数不写流水（磁盘记录数仍是 1）', qDisk.records.length === 1, `${qDisk.records.length}`)
+  check(
+    '界面同步显示新数量（改数广播到了渲染进程）',
+    await waitFor(async () => (await firstRow(win!))['数量'] === '-12.5'),
+    rowText(await firstRow(win))
+  )
+  check('负数量在界面上带负库存高亮', await quantityIsNegative(win))
+
+  win.destroy()
+  win = null
+  await rm(qtyDir, { recursive: true, force: true })
 
   // ── 14. 控制台 ───────────────────────────────────────────────
   section('14. 渲染进程控制台')

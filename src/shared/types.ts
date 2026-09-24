@@ -95,6 +95,17 @@ export type DeleteRecordResult =
 export type SetThresholdResult = { ok: true; item: Item } | { ok: false; error: string }
 
 /**
+ * 强行修改库存数量的结果。
+ *
+ * `wrongPassword` 单独标出来，是为了让界面能区分「口令不对」和「数量非法」：
+ * 前者要把用户退回口令那一步、并清空输入，后者只需在数量框上报错。
+ * 只给一个 error 字符串的话，界面就得去匹配文案，改一个字就失配。
+ */
+export type SetQuantityResult =
+  | { ok: true; item: Item }
+  | { ok: false; error: string; wrongPassword?: boolean }
+
+/**
  * 重命名物品的结果。
  *
  * 「改名」有两种落法，用 {@link merged} 区分：
